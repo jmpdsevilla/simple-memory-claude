@@ -8,6 +8,20 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.4.0] — 2026-07-25
+
+### Corregido
+
+**HOME.md deja de ser un archivo invisible.** Estaba marcado como reservado desde que el índice se escribía a disco, y se quedó excluido por inercia cuando eso dejó de hacerse (v1.1.2). El efecto: la nota más enlazada de una bóveda quedaba fuera del índice — sus backlinks no se contaban, sus wikilinks no se validaban, no aparecía en `get_index` ni la alcanzaba ninguna tarea de mantenimiento. Ahora es una nota como las demás. `read_note("HOME")` sigue funcionando igual.
+
+**El filtro de categoría entiende la raíz.** Las notas de la raíz se guardan con `category: .` pero el índice las llama internamente `raiz`, así que filtrar por `"."` —la forma que se escribe al guardar— no devolvía ninguna. Afectaba a `list_notes`, `search_notes`, `get_index`, `due_notes` y `migrate_yaml_tags`. Ahora `"."`, `""` y `raiz` son equivalentes, y filtrar por la raíz no arrastra las subcarpetas.
+
+### Pruebas
+
+50 casos (6 nuevos: HOME en el índice, sus backlinks y enlaces rotos, la migración alcanzándola, y el filtrado de la raíz por sus dos nombres).
+
+---
+
 ## [2.3.1] — 2026-07-25
 
 ### Corregido

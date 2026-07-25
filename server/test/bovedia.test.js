@@ -436,6 +436,52 @@ describe('BovedIA', () => {
     });
   });
 
+  describe('HOME es una nota como las demás', () => {
+    before(async () => {
+      fs.writeFileSync(
+        path.join(root, 'HOME.md'),
+        '---\ntitle: HOME\ncategory: .\ntags: []\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\n# HOME\n\nMapa de la bóveda: [[la-piramide]] y [[no-existe-esta]].\n\n#mapa\n',
+      );
+      await kb.llamar('write_note', { title: 'Toque HOME', content: 'x', category: 'sistema' });
+    });
+
+    test('read_note("HOME") sigue funcionando', async () => {
+      const { texto } = await kb.llamar('read_note', { name: 'HOME' });
+      assert.match(texto, /Mapa de la bóveda/);
+    });
+
+    test('aparece en el índice', async () => {
+      const { texto } = await kb.llamar('get_index', { full: true, category: '.' });
+      assert.match(texto, /HOME/);
+    });
+
+    test('sus wikilinks rotos se detectan', async () => {
+      const { texto } = await kb.llamar('list_broken_links');
+      assert.match(texto, /no-existe-esta/);
+    });
+
+    test('registra backlinks hacia otras notas', async () => {
+      const { texto } = await kb.llamar('find_backlinks', { name: 'la-piramide' });
+      assert.match(texto, /HOME/);
+    });
+
+    test('la raíz se puede filtrar como "." (la forma que se guarda)', async () => {
+      const porPunto = await kb.llamar('list_notes', { category: '.' });
+      assert.match(porPunto.texto, /HOME/);
+      const porNombre = await kb.llamar('list_notes', { category: 'raiz' });
+      assert.match(porNombre.texto, /HOME/);
+      // Filtrar por la raíz no debe arrastrar las notas de las subcarpetas.
+      assert.doesNotMatch(porPunto.texto, /la-piramide/);
+    });
+
+    test('la migración de etiquetas también la alcanza', async () => {
+      await kb.llamar('migrate_yaml_tags', { dry_run: false });
+      const contenido = fs.readFileSync(path.join(root, 'HOME.md'), 'utf8');
+      assert.doesNotMatch(contenido, /tags:/);
+      assert.match(contenido, /updated: 2026-01-01/);
+    });
+  });
+
   describe('mantenimiento', () => {
     test('move_note actualiza los wikilinks que apuntaban a la nota', async () => {
       await kb.llamar('move_note', { name: 'destino', new_title: 'Destino Nuevo' });

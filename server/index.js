@@ -25,8 +25,13 @@ const MEMORY_ROOT = (process.env.KB_MEMORY_ROOT || process.env.MEMORY_PATH)
 // usar: el router "Inicio", la pirámide, el alma, y carpetas para proyectos,
 // clientes, conocimiento y referencias.
 
-// Archivos reservados que no se tratan como notas
-const RESERVED = new Set(['HOME.md']);
+// Archivos reservados que no se tratan como notas.
+// Vacío desde v2.4.0: HOME.md estuvo aquí desde que el índice se escribía a
+// disco, y quedó excluido por inercia cuando dejó de generarse (v1.1.2). El
+// efecto era que la nota más enlazada de una bóveda quedaba fuera del índice:
+// sus backlinks no se contaban, sus wikilinks no se validaban, no salía en
+// get_index ni en las tareas de mantenimiento. Es una nota como las demás.
+const RESERVED = new Set();
 
 // Autor IA registrado en el bloque Markdown Annotations (spec iainc/Markdown-Annotations v0.2).
 // `&` indica autoría de IA, `@` se reserva para humanos, `*` para referencias.
@@ -409,6 +414,27 @@ function safeCategory(category) {
   return String(category).replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
 }
 
+// ─── Categorías ────────────────────────────────────────────────────────────
+// La raíz de la bóveda se escribe "." en el frontmatter (es la convención al
+// guardar), pero por dentro el índice la llama "raiz". Sin normalizar, filtrar
+// por category "." no devolvía ninguna nota aunque hubiera varias en la raíz.
+// Esta función deja ambas formas en la misma para poder compararlas.
+function canonicalCategory(category) {
+  const c = String(category ?? '').trim().replace(/^\.\//, '').replace(/\/+$/, '');
+  if (c === '' || c === '.' || c === 'raiz' || c === 'raíz') return 'raiz';
+  return c;
+}
+
+// ¿Esta nota cae dentro del filtro de categoría? El filtro es recursivo:
+// incluye la categoría indicada y todas sus subcarpetas.
+function categoryMatches(noteCategory, filtro) {
+  if (!filtro) return true;
+  const nota = canonicalCategory(noteCategory);
+  const buscada = canonicalCategory(filtro);
+  if (buscada === 'raiz') return nota === 'raiz';
+  return nota === buscada || nota.startsWith(buscada + '/');
+}
+
 // ─── Texto: comparación insensible a acentos ───────────────────────────────
 // La bóveda está escrita en español: "pirámide" y "piramide" tienen que
 // encontrarse la una a la otra. Se compara siempre sobre la forma sin
@@ -662,7 +688,7 @@ function getBacklinks(targetName, allNotes) {
 //   propósito y, preferiblemente, acotado con `category`.
 function buildIndex(allNotes, { full = false, category = null } = {}) {
   const notes = category
-    ? allNotes.filter((n) => n.category === category || n.category.startsWith(category + '/'))
+    ? allNotes.filter((n) => categoryMatches(n.category, category))
     : allNotes;
 
   const byCategory = {};
@@ -986,7 +1012,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.3.1' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.4.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -1592,7 +1618,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const limit = Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : 20;
       const scoped = args.category
-        ? allNotes.filter((n) => n.category === args.category || n.category.startsWith(args.category + '/'))
+        ? allNotes.filter((n) => categoryMatches(n.category, args.category))
         : allNotes;
 
       const hits = [];
@@ -1648,7 +1674,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // una etiqueta escrita en el cuerpo devolvía cero notas.
       const wantedTag = args.tag ? args.tag.trim().replace(/^#/, '').replace(/-/g, '_').toLowerCase() : null;
       const filtered = allNotes.filter((n) => {
-        const matchCategory = !args.category || n.category === args.category || n.category.startsWith(args.category + '/');
+        const matchCategory = categoryMatches(n.category, args.category);
         const matchTag = !wantedTag || [...allTagsOf(n)].some((t) => t.toLowerCase() === wantedTag);
         return matchCategory && matchTag;
       });
@@ -2341,8 +2367,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Recopilar todas las notas, incluida HOME.md (que getAllNotes excluye).
       const noteRefs = [];
-      const homeFile = path.join(MEMORY_ROOT, 'HOME.md');
-      if (fs.existsSync(homeFile)) noteRefs.push({ path: homeFile, name: 'HOME' });
+      // HOME.md ya entra en el índice como una nota más (v2.4.0); no hay que
+      // añadirlo aparte o se procesaría dos veces.
       for (const n of getAllNotes()) noteRefs.push({ path: n.path, name: n.name });
 
       const toMigrate = [];
@@ -2412,7 +2438,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === 'due_notes') {
       const category = args?.category || 'programado';
       const allNotes = getCachedAllNotes();
-      const scoped = allNotes.filter((n) => n.category === category || n.category.startsWith(category + '/'));
+      const scoped = allNotes.filter((n) => categoryMatches(n.category, category));
 
       if (!scoped.length) {
         return { content: [{ type: 'text', text: `No hay notas en "${category}".` }] };
@@ -2478,7 +2504,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const descartar = new Set((args?.drop || []).map((t) => normalizeTagName(t)));
       const allNotes = getCachedAllNotes();
       const scoped = args?.category
-        ? allNotes.filter((n) => n.category === args.category || n.category.startsWith(args.category + '/'))
+        ? allNotes.filter((n) => categoryMatches(n.category, args.category))
         : allNotes;
 
       const plan = [];
