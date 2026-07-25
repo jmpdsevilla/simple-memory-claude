@@ -306,6 +306,19 @@ describe('BovedIA', () => {
       assert.doesNotMatch(texto, /#nano-banana/);
     });
 
+    test('reconoce hashtags que empiezan por dígito (#2fa) pero no los numéricos', async () => {
+      await kb.llamar('write_note', {
+        title: 'Codigos de recuperacion',
+        content: 'Cuerpo con el año #2026 suelto en el texto.\n\n#tipo_referencia #smc #2fa #seguridad',
+        category: 'sistema',
+      });
+      const filtro = await kb.llamar('list_notes', { tag: '2fa' });
+      assert.match(filtro.texto, /codigos-de-recuperacion/);
+      const auditoria = await kb.llamar('audit_tags');
+      assert.match(auditoria.texto, /#2fa/);
+      assert.doesNotMatch(auditoria.texto, /#2026/);
+    });
+
     test('list_notes filtra por hashtag del cuerpo, no solo por YAML', async () => {
       const { texto } = await kb.llamar('list_notes', { tag: 'tipo_referencia' });
       assert.match(texto, /con-guiones/);

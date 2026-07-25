@@ -1,6 +1,6 @@
 # Referencia de herramientas — Las 34 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.5.1).
+Referencia completa de todas las herramientas de BovedIA (v2.5.2).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas

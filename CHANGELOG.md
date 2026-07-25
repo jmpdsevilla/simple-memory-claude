@@ -8,6 +8,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.5.2] — 2026-07-25
+
+### Corregido
+
+**Los hashtags que empiezan por dígito ya se reconocen.** El patrón exigía que la etiqueta empezara por letra, así que `#2fa` no existía para el motor: no se extraía, no se podía filtrar por ella y una línea de etiquetas que la contuviera dejaba de reconocerse entera — la nota quedaba invisible para la auditoría, la poda y la migración de etiquetas. Ahora se admite cualquier etiqueta que empiece por letra o dígito **siempre que contenga alguna letra**, de forma que un año suelto en el texto (`#2026`) sigue sin contar como etiqueta.
+
+---
+
 ## [2.5.1] — 2026-07-25
 
 ### Corregido

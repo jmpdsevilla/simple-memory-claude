@@ -756,7 +756,7 @@ function parseAparecer(body) {
 // Extrae hashtags `#snake_case` del cuerpo (excluye bloques de código)
 function extractHashtags(body) {
   const stripped = stripCode(body);
-  const matches = [...stripped.matchAll(/(?:^|\s)(#[a-z][a-z0-9_]*)/g)];
+  const matches = [...stripped.matchAll(/(?:^|\s)(#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)/g)];
   return [...new Set(matches.map((m) => m[1]))];
 }
 
@@ -767,7 +767,7 @@ function extractHashtags(body) {
 // auditar la taxonomía y corregirlos a snake_case.
 function extractDashedHashtags(body) {
   const stripped = stripCode(body);
-  const matches = [...stripped.matchAll(/(?:^|\s)(#[a-z][a-z0-9_]*(?:-[a-z0-9_]+)+)/g)];
+  const matches = [...stripped.matchAll(/(?:^|\s)(#(?=[a-z0-9_-]*[a-z])[a-z0-9][a-z0-9_]*(?:-[a-z0-9_]+)+)/g)];
   return [...new Set(matches.map((m) => m[1]))];
 }
 
@@ -782,7 +782,7 @@ function lastHashtagLine(body) {
     const l = lineas[i].trim();
     if (!l) continue;
     vistas++;
-    if (/^(#[a-z][a-z0-9_]*)(\s+#[a-z][a-z0-9_]*)*$/.test(l)) {
+    if (/^(#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)(\s+#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)*$/.test(l)) {
       return { index: i, texto: l, tags: l.split(/\s+/).map((t) => t.slice(1)) };
     }
   }
@@ -836,7 +836,7 @@ function splitBodyAndTrailing(body) {
   for (let i = lastIdx; i >= 0 && i >= lastIdx - 4; i--) {
     const trimmed = lines[i].trim();
     if (trimmed === '') continue;
-    if (/^(#[a-z][a-z0-9_]*)(\s+#[a-z][a-z0-9_]*)*\s*$/.test(trimmed)) {
+    if (/^(#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)(\s+#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)*\s*$/.test(trimmed)) {
       hashtagLine = i;
       break;
     }
@@ -1030,7 +1030,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.1' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.2' },
   { capabilities: { tools: {} } }
 );
 
@@ -2602,7 +2602,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             let idx = -1;
             for (let i = lineas.length - 1; i >= 0 && i >= lineas.length - 4; i--) {
               if (!lineas[i].trim()) continue;
-              if (/^(#[a-z][a-z0-9_]*)(\s+#[a-z][a-z0-9_]*)*\s*$/.test(lineas[i].trim())) idx = i;
+              if (/^(#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)(\s+#(?=[a-z0-9_]*[a-z])[a-z0-9][a-z0-9_]*)*\s*$/.test(lineas[i].trim())) idx = i;
               break;
             }
             if (idx >= 0) {
