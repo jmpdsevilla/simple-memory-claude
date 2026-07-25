@@ -8,6 +8,24 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.3.0] — 2026-07-25
+
+### Añadido
+
+**`migrate_yaml_tags`.** Operación one-shot para bóvedas que arrastran etiquetas en dos sitios: baja al cuerpo, como hashtags `#snake_case`, los tags que solo estaban en el frontmatter YAML, y deja el frontmatter limpio. No duplica los que ya existían en el cuerpo, normaliza la forma (`#Nano-Banana` y `Diseño Web` pasan a `#nano_banana` y `#diseno_web`), conserva la fecha de modificación y la autoría, y es idempotente. Corre en `dry_run` por defecto; acepta `category` para migrar por partes y `drop` para descartar etiquetas de ruido en vez de bajarlas.
+
+El problema que resuelve: los editores que agrupan por etiqueta (iA Writer y similares) no leen el frontmatter, así que una nota clasificada solo en YAML figura como sin clasificar. La convención de la bóveda son los hashtags al final del cuerpo; esta herramienta salva las etiquetas que se quedaron arriba en lugar de perderlas al limpiar.
+
+### Cambiado
+
+**El frontmatter ya no escribe `tags: []` cuando está vacío.** Una bóveda que clasifica con hashtags no necesita arrastrar un campo vacío en cada archivo. Si la nota tiene tags, se conservan tal cual.
+
+### Pruebas
+
+43 casos (9 nuevos para la migración: simulación, creación de la línea de hashtags, no duplicación, limpieza del frontmatter, preservación de fechas, idempotencia, `drop` y que lo migrado quede buscable y filtrable).
+
+---
+
 ## [2.2.0] — 2026-07-25
 
 Versión de fortalecimiento: seguridad de rutas, rendimiento, búsqueda en español y tres herramientas nuevas. La API existente no cambia — ninguna herramienta cambia de nombre ni de parámetros.

@@ -467,10 +467,14 @@ function parseFrontmatter(content) {
   return { frontmatter, body: match[2] };
 }
 
-// Construye el bloque frontmatter
+// Construye el bloque frontmatter.
+// El campo `tags` solo se escribe si la nota tiene alguno: una bóveda que
+// clasifica con hashtags en el cuerpo no necesita arrastrar un `tags: []` vacío
+// en cada archivo. Si la nota trae tags, se conservan tal cual.
 function buildFrontmatter({ title, category, tags, created, updated }) {
-  const tagsStr = Array.isArray(tags) ? `[${tags.join(', ')}]` : '[]';
-  return `---\ntitle: ${title}\ncategory: ${category}\ntags: ${tagsStr}\ncreated: ${created}\nupdated: ${updated}\n---\n`;
+  const lista = Array.isArray(tags) ? tags.filter((t) => String(t).trim()) : (tags ? [tags] : []);
+  const tagsLine = lista.length ? `tags: [${lista.join(', ')}]\n` : '';
+  return `---\ntitle: ${title}\ncategory: ${category}\n${tagsLine}created: ${created}\nupdated: ${updated}\n---\n`;
 }
 
 // Busca una nota por nombre en todas las subcarpetas.
@@ -741,6 +745,22 @@ function extractDashedHashtags(body) {
   return [...new Set(matches.map((m) => m[1]))];
 }
 
+// Lleva una etiqueta a la forma canónica de la bóveda: `snake_case`, sin `#`,
+// sin acentos ni ñ, sin mayúsculas. Es la forma que los editores agrupan y la
+// que el extractor de hashtags reconoce entera.
+//   "#Nano-Banana" → "nano_banana" · "Diseño Web" → "diseno_web"
+function normalizeTagName(tag) {
+  return String(tag)
+    .trim()
+    .replace(/^#/, '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[ñÑ]/g, 'n')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 // Todas las etiquetas de una nota: hashtags del cuerpo + tags del frontmatter
 // YAML (que la doctrina jubiló pero que muchas notas antiguas conservan). Se
 // devuelven normalizadas y sin `#` para poder filtrar por cualquiera de las dos.
@@ -748,12 +768,12 @@ function allTagsOf(note) {
   const out = new Set();
   const body = note.body !== undefined ? note.body : '';
   for (const h of extractHashtags(body)) out.add(h.slice(1));
-  for (const h of extractDashedHashtags(body)) out.add(h.slice(1).replace(/-/g, '_'));
+  for (const h of extractDashedHashtags(body)) out.add(normalizeTagName(h));
   const yaml = note.frontmatter?.tags;
   const list = Array.isArray(yaml) ? yaml : (yaml ? [yaml] : []);
   for (const t of list) {
-    const clean = String(t).trim().replace(/^#/, '');
-    if (clean) out.add(clean.replace(/-/g, '_'));
+    const clean = normalizeTagName(t);
+    if (clean) out.add(clean);
   }
   return out;
 }
@@ -966,7 +986,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.2.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.3.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -1311,6 +1331,18 @@ const ALL_TOOLS = [
         type: 'object',
         properties: { name: { type: 'string', description: 'Nombre de la nota sin extensión .md' } },
         required: ['name'],
+      },
+    },
+    {
+      name: 'migrate_yaml_tags',
+      description: 'Migrar, trasladar o bajar al cuerpo los tags que quedan en el frontmatter YAML, convirtiéndolos en hashtags `#snake_case` al final de la nota, y dejar el frontmatter limpio. Los tags que ya existen como hashtag no se duplican. Operación one-shot e idempotente: conserva la fecha de modificación y la autoría. Por defecto corre en dry_run para ver qué haría sin tocar nada.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          dry_run: { type: 'boolean', description: 'Si true (por defecto), no escribe nada y devuelve el informe de lo que haría. Con false ejecuta la migración real.' },
+          category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional). Útil para migrar por partes.' },
+          drop: { type: 'array', items: { type: 'string' }, description: 'Etiquetas que NO se rescatan al cuerpo: se descartan al vaciar el frontmatter. Útil para ruido genérico.' },
+        },
       },
     },
     {
@@ -2431,6 +2463,127 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{
           type: 'text',
           text: `Secciones de "${args.name}" — ${outline.length} encabezado(s), ${totalLines} líneas en total:\n\n${lines.join('\n')}\n\nLee solo lo que necesites con read_section.`,
+        }],
+      };
+    }
+
+    // ── migrate_yaml_tags ───────────────────────────────────────────────
+    // Una bóveda que clasifica con hashtags en el cuerpo no gana nada
+    // arrastrando además tags en el frontmatter: los editores que agrupan por
+    // etiqueta no leen el YAML, así que esas notas figuran como sin clasificar.
+    // Esta operación baja al cuerpo lo que solo estaba arriba y deja el
+    // frontmatter limpio, sin perder ninguna etiqueta por el camino.
+    if (name === 'migrate_yaml_tags') {
+      const dryRun = args?.dry_run !== false;
+      const descartar = new Set((args?.drop || []).map((t) => normalizeTagName(t)));
+      const allNotes = getCachedAllNotes();
+      const scoped = args?.category
+        ? allNotes.filter((n) => n.category === args.category || n.category.startsWith(args.category + '/'))
+        : allNotes;
+
+      const plan = [];
+      for (const note of scoped) {
+        const yaml = note.frontmatter?.tags;
+        const lista = Array.isArray(yaml) ? yaml : (yaml ? [yaml] : []);
+        const limpios = lista.map((t) => normalizeTagName(t)).filter(Boolean);
+        if (!limpios.length) continue;
+
+        const enCuerpo = new Set(extractHashtags(note.body || '').map((h) => normalizeTagName(h)));
+        const rescatar = [];
+        for (const tag of limpios) {
+          if (enCuerpo.has(tag) || descartar.has(tag) || rescatar.includes(tag)) continue;
+          rescatar.push(tag);
+        }
+        plan.push({ note, rescatar, descartados: limpios.filter((t) => descartar.has(t)) });
+      }
+
+      if (!plan.length) {
+        return { content: [{ type: 'text', text: 'No queda ninguna nota con tags en el frontmatter. Nada que migrar.' }] };
+      }
+
+      const totalRescatados = plan.reduce((s, p) => s + p.rescatar.length, 0);
+      const soloVaciar = plan.filter((p) => !p.rescatar.length).length;
+
+      if (dryRun) {
+        const ejemplos = plan
+          .filter((p) => p.rescatar.length)
+          .slice(0, 25)
+          .map((p) => `- **${p.note.name}** (${p.note.category}) → ${p.rescatar.map((t) => '#' + t).join(' ')}`);
+        return {
+          content: [{
+            type: 'text',
+            text: `SIMULACIÓN (no se ha escrito nada).\n\n` +
+              `- Notas con tags en el frontmatter: **${plan.length}**\n` +
+              `- Etiquetas que bajarían al cuerpo: **${totalRescatados}**\n` +
+              `- Notas en las que solo hay que vaciar el frontmatter (sus tags ya estaban en el cuerpo): **${soloVaciar}**\n` +
+              (descartar.size ? `- Etiquetas descartadas por petición: ${[...descartar].join(', ')}\n` : '') +
+              `\nPrimeras notas afectadas:\n${ejemplos.join('\n')}\n` +
+              (plan.filter((p) => p.rescatar.length).length > 25 ? `… y ${plan.filter((p) => p.rescatar.length).length - 25} más.\n` : '') +
+              `\nPara ejecutarla de verdad: \`migrate_yaml_tags(dry_run: false)\`.`,
+          }],
+        };
+      }
+
+      let migradas = 0;
+      let bajadas = 0;
+      const errores = [];
+      for (const { note: indexed, rescatar } of plan) {
+        try {
+          const note = loadNote(indexed.name);
+          if (!note) { errores.push(`${indexed.name}: no encontrada`); continue; }
+
+          let newBody = note.body;
+          if (rescatar.length) {
+            const nuevos = rescatar.map((t) => '#' + t).join(' ');
+            const lineas = newBody.split('\n');
+            // ¿La nota termina ya con una línea de hashtags? Entonces se amplía;
+            // si no, se crea una nueva al final del cuerpo.
+            let idx = -1;
+            for (let i = lineas.length - 1; i >= 0 && i >= lineas.length - 4; i--) {
+              if (!lineas[i].trim()) continue;
+              if (/^(#[a-z][a-z0-9_]*)(\s+#[a-z][a-z0-9_]*)*\s*$/.test(lineas[i].trim())) idx = i;
+              break;
+            }
+            if (idx >= 0) {
+              lineas[idx] = `${lineas[idx].trimEnd()} ${nuevos}`;
+              newBody = lineas.join('\n');
+            } else {
+              newBody = `${newBody.replace(/\s+$/, '')}\n\n${nuevos}`;
+            }
+            bajadas += rescatar.length;
+          }
+
+          // La autoría del fragmento se conserva: es un cambio mecánico de
+          // etiquetas, no contenido nuevo de nadie.
+          let authors = note.bodyAuthors;
+          if (newBody !== note.body) {
+            const diff = computeBodyDiff(note.body, newBody);
+            const original = uniqueAuthorOfSegment(note.bodyAuthors, diff.editStart, diff.oldLength);
+            authors = applyEditToAuthors(note.bodyAuthors, diff.editStart, diff.oldLength, diff.newLength, original || CLAUDE_AUTHOR);
+          }
+
+          persistNote(
+            note.filePath,
+            { ...note.frontmatter, tags: [] },
+            newBody,
+            authors,
+            { preserveUpdated: true },
+          );
+          migradas++;
+        } catch (e) {
+          errores.push(`${indexed.name}: ${e.message}`);
+        }
+      }
+      invalidateCache();
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Migración completada.\n\n` +
+            `- Notas con el frontmatter ya limpio: **${migradas}**\n` +
+            `- Etiquetas bajadas al cuerpo: **${bajadas}**\n` +
+            `- Fecha de modificación y autoría: preservadas\n` +
+            (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : '- Errores: ninguno'),
         }],
       };
     }

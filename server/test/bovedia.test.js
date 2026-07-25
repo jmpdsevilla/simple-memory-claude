@@ -312,6 +312,99 @@ describe('BovedIA', () => {
     });
   });
 
+  describe('migrate_yaml_tags', () => {
+    // Se monta una bóveda aparte: la migración toca todas las notas.
+    let raiz;
+    let mig;
+
+    before(async () => {
+      raiz = bovedaTemporal('migracion');
+      mig = await new Cliente(raiz, { KB_ENABLE_ANNOTATIONS: '1' }).iniciar();
+      // (a) tags YAML que no están en el cuerpo, y la nota ya tiene hashtags
+      await mig.llamar('write_note', {
+        title: 'Con hashtags', content: 'Cuerpo.\n\n#tipo_referencia', category: 'conocimiento',
+        tags: ['GSC', 'Diseño Web', 'autor-claude'],
+      });
+      // (b) tags YAML y ningún hashtag en el cuerpo
+      await mig.llamar('write_note', {
+        title: 'Sin hashtags', content: 'Solo cuerpo, sin etiquetas.', category: 'conocimiento',
+        tags: ['supabase', 'postgres'],
+      });
+      // (c) tags YAML ya duplicados en el cuerpo
+      await mig.llamar('write_note', {
+        title: 'Duplicada', content: 'Cuerpo.\n\n#vercel #deploy', category: 'conocimiento',
+        tags: ['vercel', 'deploy'],
+      });
+    });
+
+    after(() => {
+      mig.cerrar();
+      fs.rmSync(raiz, { recursive: true, force: true });
+    });
+
+    test('dry_run informa y no escribe nada', async () => {
+      const { texto } = await mig.llamar('migrate_yaml_tags');
+      assert.match(texto, /SIMULACIÓN/);
+      assert.match(texto, /Notas con tags en el frontmatter: \*\*3\*\*/);
+      const nota = await mig.llamar('read_note', { name: 'sin-hashtags' });
+      assert.match(nota.texto, /tags: \[supabase, postgres\]/);
+    });
+
+    test('baja las etiquetas al cuerpo en forma snake_case y sin acentos', async () => {
+      await mig.llamar('migrate_yaml_tags', { dry_run: false });
+      const { texto } = await mig.llamar('read_note', { name: 'con-hashtags' });
+      assert.match(texto, /#tipo_referencia #gsc #diseno_web #autor_claude/);
+    });
+
+    test('crea la línea de hashtags si la nota no tenía', async () => {
+      const { texto } = await mig.llamar('read_note', { name: 'sin-hashtags' });
+      assert.match(texto, /#supabase #postgres/);
+    });
+
+    test('no duplica las que ya estaban en el cuerpo', async () => {
+      const { texto } = await mig.llamar('read_note', { name: 'duplicada' });
+      assert.equal((texto.match(/#vercel/g) || []).length, 1);
+    });
+
+    test('deja el frontmatter sin el campo tags', async () => {
+      for (const n of ['con-hashtags', 'sin-hashtags', 'duplicada']) {
+        const { texto } = await mig.llamar('read_frontmatter', { name: n });
+        assert.doesNotMatch(texto, /tags:/);
+      }
+    });
+
+    test('conserva la fecha de modificación original', async () => {
+      const { texto } = await mig.llamar('read_frontmatter', { name: 'duplicada' });
+      const hoy = new Date().toISOString().split('T')[0];
+      assert.match(texto, new RegExp(`updated: ${hoy}`)); // creadas hoy en el test
+      assert.match(texto, /created:/);
+    });
+
+    test('es idempotente: una segunda pasada no encuentra nada', async () => {
+      const { texto } = await mig.llamar('migrate_yaml_tags', { dry_run: false });
+      assert.match(texto, /Nada que migrar/);
+    });
+
+    test('las etiquetas migradas quedan buscables y filtrables', async () => {
+      const busqueda = await mig.llamar('search_notes', { query: 'postgres' });
+      assert.match(busqueda.texto, /sin-hashtags/);
+      const filtro = await mig.llamar('list_notes', { tag: 'diseno_web' });
+      assert.match(filtro.texto, /con-hashtags/);
+    });
+
+    test('drop descarta las etiquetas indicadas en vez de bajarlas', async () => {
+      const otra = bovedaTemporal('migracion-drop');
+      const kb2 = await new Cliente(otra).iniciar();
+      await kb2.llamar('write_note', { title: 'Ruido', content: 'Cuerpo.', category: 'x', tags: ['proyecto', 'supabase'] });
+      await kb2.llamar('migrate_yaml_tags', { dry_run: false, drop: ['proyecto'] });
+      const { texto } = await kb2.llamar('read_note', { name: 'ruido' });
+      assert.match(texto, /#supabase/);
+      assert.doesNotMatch(texto, /#proyecto/);
+      kb2.cerrar();
+      fs.rmSync(otra, { recursive: true, force: true });
+    });
+  });
+
   describe('get_index', () => {
     test('por defecto devuelve solo el árbol de categorías', async () => {
       const { texto } = await kb.llamar('get_index');

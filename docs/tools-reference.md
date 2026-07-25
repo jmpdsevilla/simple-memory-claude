@@ -1,6 +1,6 @@
-# Referencia de herramientas — Las 32 herramientas MCP
+# Referencia de herramientas — Las 33 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.2.0).
+Referencia completa de todas las herramientas de BovedIA (v2.3.0).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -8,7 +8,7 @@ Las herramientas se agrupan en seis bloques:
 3. **Mantenimiento de wikilinks y tags** (6) — operaciones sobre enlaces y tags de toda la bóveda
 4. **Lecturas baratas y mantenimiento** (7) — lecturas parciales y limpieza
 5. **Autoría** (2) — solo se exponen con `KB_ENABLE_ANNOTATIONS=1`
-6. **Rutina de la bóveda** (3) — programadas, secciones y auditoría de etiquetas
+6. **Rutina de la bóveda** (4) — programadas, secciones, auditoría y migración de etiquetas
 
 Con `KB_TOOLS=core` el servidor expone solo las 15 de uso diario, para clientes con poca ventana de contexto. Por defecto se exponen todas.
 
@@ -330,6 +330,16 @@ Informe de salud de las etiquetas de la bóveda: hashtags con guión medio, vari
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `fix_dashes` | boolean | no | Corregir los hashtags con guión a `snake_case`. Por defecto false (solo informa) |
+
+### migrate_yaml_tags
+
+Baja al cuerpo, como hashtags `#snake_case`, las etiquetas que solo estaban en el frontmatter YAML, y deja el frontmatter limpio. No duplica las que ya estaban en el cuerpo, normaliza la forma, conserva `updated` y la autoría, y es idempotente. Pensada para bóvedas que vienen de clasificar en los dos sitios: los editores que agrupan por etiqueta no leen el YAML, así que esas notas figuran como sin clasificar.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `dry_run` | boolean | no | Simular sin escribir. Por defecto true |
+| `category` | string | no | Acotar a una categoría y sus subcarpetas |
+| `drop` | array | no | Etiquetas que se descartan en vez de bajarse al cuerpo |
 
 ---
 
