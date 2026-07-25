@@ -162,7 +162,9 @@ Solo actívalo si usas un editor compatible con la spec: los que no la soportan 
 
 ## Las herramientas
 
-29 en total. Las 27 primeras funcionan siempre. Las 2 de autoría (`read_authorship`, `migrate_annotations`) también aparecen en la lista, pero solo operan si arrancas el servidor con `KB_ENABLE_ANNOTATIONS=1`; sin ese flag avisan de que están desactivadas.
+32 en total. Las 30 primeras funcionan siempre. Las 2 de autoría (`read_authorship`, `migrate_annotations`) solo se exponen si arrancas el servidor con `KB_ENABLE_ANNOTATIONS=1`.
+
+El listado de herramientas viaja en cada sesión y ocupa contexto. Si tu cliente tiene poca ventana, arranca con `KB_TOOLS=core` y se expondrán solo las 15 de uso diario (la mitad de tokens). Por defecto se exponen todas.
 
 ### Lectura y escritura base
 
@@ -170,9 +172,9 @@ Solo actívalo si usas un editor compatible con la spec: los que no la soportan 
 |---|---|
 | `write_note` | Crear o actualizar una nota (upsert completo) |
 | `read_note` | Leer una nota (busca en todas las categorías) |
-| `search_notes` | Buscar por texto libre (lógica AND) |
-| `list_notes` | Listar notas, filtradas por categoría o tag |
-| `get_index` | Índice completo de la bóveda con backlinks |
+| `search_notes` | Buscar por texto libre (lógica AND, sin distinguir acentos) |
+| `list_notes` | Listar notas, filtradas por categoría o etiqueta |
+| `get_index` | Mapa de categorías (`full: true` para el detalle) |
 | `delete_note` | Eliminar una nota (avisa de backlinks) |
 | `create_category` | Crear una carpeta |
 | `move_note` | Mover/renombrar una nota (actualiza wikilinks) |
@@ -205,6 +207,7 @@ Solo actívalo si usas un editor compatible con la spec: los que no la soportan 
 |---|---|
 | `peek_note` | Frontmatter + primer párrafo |
 | `read_section` | Solo una sección |
+| `list_sections` | Índice de encabezados de una nota, sin su contenido |
 | `read_frontmatter` | Solo el YAML |
 
 ### Mantenimiento de la bóveda
@@ -215,6 +218,8 @@ Solo actívalo si usas un editor compatible con la spec: los que no la soportan 
 | `move_category` | Renombrar una carpeta (actualiza el frontmatter de cada nota) |
 | `validate_note` | Revisar frontmatter, hashtags, "Ver también" y enlaces rotos |
 | `bulk_move` | Mover varias notas a la misma categoría |
+| `due_notes` | Notas programadas que ya toca sacar hoy |
+| `audit_tags` | Salud de las etiquetas (y corrección de las mal formadas) |
 
 ### Autoría (con `KB_ENABLE_ANNOTATIONS=1`)
 

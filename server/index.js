@@ -382,6 +382,67 @@ function stripCode(content) {
     .replace(/`[^`\n]+`/g, '');
 }
 
+// ─── Seguridad de rutas ────────────────────────────────────────────────────
+// Toda ruta construida a partir de datos que llegan en los argumentos de una
+// tool (category, new_category, nombres de carpeta) tiene que quedar DENTRO de
+// MEMORY_ROOT. Sin esta comprobación, un valor como "../../otra-carpeta" haría
+// que el servidor escribiera o borrara fuera de la bóveda. Lanza PathError, que
+// el handler central convierte en un error legible sin tumbar el servidor.
+class PathError extends Error {}
+
+function safeJoin(...segments) {
+  const root = path.resolve(MEMORY_ROOT);
+  const raw = segments.filter((s) => s !== undefined && s !== null && s !== '').join('/');
+  const target = path.resolve(root, raw);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new PathError(`Ruta fuera de la bóveda: "${raw}". Las notas y carpetas solo pueden vivir dentro de la raíz configurada.`);
+  }
+  return target;
+}
+
+// Normaliza una categoría recibida como argumento: quita barras sobrantes y
+// comprueba que no se escapa de la raíz. Devuelve la categoría en forma canónica
+// (con "/" como separador), lista para guardar en el frontmatter.
+function safeCategory(category) {
+  if (!category) return '';
+  safeJoin(category); // valida (lanza PathError si escapa)
+  return String(category).replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
+}
+
+// ─── Texto: comparación insensible a acentos ───────────────────────────────
+// La bóveda está escrita en español: "pirámide" y "piramide" tienen que
+// encontrarse la una a la otra. Se compara siempre sobre la forma sin
+// diacríticos y en minúsculas.
+function deaccent(text) {
+  return text.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function foldText(text) {
+  return deaccent(String(text)).toLowerCase();
+}
+
+// ─── Wikilinks ─────────────────────────────────────────────────────────────
+// Devuelve el slug de nota al que apunta un wikilink, o null si el enlace no
+// apunta a una nota (ancla interna del tipo [[#Sección]]).
+// Soporta las tres formas que aparecen en la práctica:
+//   [[slug]]            → slug
+//   [[slug|alias]]      → slug   (el alias es solo texto visible)
+//   [[slug#Sección]]    → slug   (enlace a una sección de otra nota)
+//   [[#Sección]]        → null   (ancla dentro de la propia nota)
+function wikilinkTarget(raw) {
+  const target = String(raw).split('|')[0].trim();
+  if (!target || target.startsWith('#')) return null;
+  const withoutAnchor = target.split('#')[0].trim();
+  return withoutAnchor || null;
+}
+
+// Extrae los destinos de nota de un contenido (ya sin bloques de código).
+function extractLinkTargets(content) {
+  return [...stripCode(content).matchAll(/\[\[([^\]]+)\]\]/g)]
+    .map((m) => wikilinkTarget(m[1]))
+    .filter(Boolean);
+}
+
 // Parsea el frontmatter YAML básico de una nota
 function parseFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -412,9 +473,19 @@ function buildFrontmatter({ title, category, tags, created, updated }) {
   return `---\ntitle: ${title}\ncategory: ${category}\ntags: ${tagsStr}\ncreated: ${created}\nupdated: ${updated}\n---\n`;
 }
 
-// Busca una nota por nombre en todas las subcarpetas
+// Busca una nota por nombre en todas las subcarpetas.
+// Primero consulta el índice en memoria (instantáneo); solo si no aparece ahí
+// recorre el disco, que es el caso de notas creadas fuera del MCP hace menos de
+// lo que dura la caché.
 function findNote(name) {
   const slug = slugify(name);
+
+  try {
+    const cached = resolveNotePath(name);
+    if (cached && fs.existsSync(cached)) return cached;
+  } catch {
+    // Si el índice no se puede construir, se sigue por el camino de disco.
+  }
 
   function searchDir(dir) {
     let entries;
@@ -458,14 +529,23 @@ function getAllNotes() {
       } else if (entry.isFile() && entry.name.endsWith('.md') && !RESERVED.has(entry.name)) {
         try {
           const content = readNoteFile(fullPath);
-          const { frontmatter } = parseFrontmatter(content);
-          const wikilinks = [...stripCode(content).matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
+          const { frontmatter, body } = parseFrontmatter(content);
+          // `wikilinks` guarda los DESTINOS ya resueltos (sin alias ni anclas):
+          // es lo que consultan backlinks, huérfanas y enlaces rotos.
+          const wikilinks = extractLinkTargets(content);
           notes.push({
             name: entry.name.replace('.md', ''),
             path: fullPath,
             category: category || 'raiz',
             frontmatter,
             wikilinks,
+            // El contenido se guarda en el índice para que search_notes no tenga
+            // que releer la bóveda entera en cada búsqueda. La caché ya lee cada
+            // archivo aquí, así que no añade E/S: solo memoria (unos pocos MB).
+            // `body` va sin el bloque de anotaciones, que es metadata interna y
+            // no debe aparecer en búsquedas ni en extractos.
+            content,
+            body: stripAnnotationBlock(body).cleanBody.replace(/^\s+/, '').replace(/\s+$/, ''),
           });
         } catch {
           // Ignorar archivos ilegibles
@@ -499,10 +579,69 @@ function getCachedAllNotes() {
 }
 function invalidateCache() {
   _cache = null;
+  _maps = null;
+}
+
+// ─── Mapas de resolución (rendimiento) ──────────────────────────────────────
+// Resolver un nombre de nota a su archivo se hacía escaneando el disco entero en
+// cada llamada (findNote). Con 340 notas y 1.767 wikilinks eso son ~90.000
+// lecturas de directorio para listar los enlaces rotos. Estos mapas resuelven lo
+// mismo en memoria, a partir del índice que ya está cacheado.
+let _maps = null;
+function getMaps() {
+  const notes = getCachedAllNotes();
+  if (_maps && _maps.notes === notes) return _maps;
+
+  const byName = new Map();   // slug exacto → nota
+  const bySlug = new Map();   // slug normalizado → nota
+  for (const note of notes) {
+    byName.set(note.name, note);
+    const s = slugify(note.name);
+    if (!bySlug.has(s)) bySlug.set(s, note);
+  }
+
+  // Backlinks en UNA pasada (antes era O(N²): por cada nota se recorrían todas).
+  const backlinks = new Map();
+  for (const note of notes) {
+    for (const link of new Set(note.wikilinks)) {
+      const target = byName.get(link) || bySlug.get(slugify(link));
+      if (!target) continue;
+      if (!backlinks.has(target.name)) backlinks.set(target.name, new Set());
+      backlinks.get(target.name).add(note.name);
+    }
+  }
+
+  _maps = { notes, byName, bySlug, backlinks };
+  return _maps;
+}
+
+// Resuelve un nombre de nota contra el índice en memoria. Devuelve la ruta del
+// archivo o null. Equivalente a findNote() pero sin tocar disco.
+function resolveNotePath(name) {
+  if (!name) return null;
+  const { byName, bySlug } = getMaps();
+  const hit = byName.get(name) || bySlug.get(slugify(name));
+  return hit ? hit.path : null;
+}
+
+// ¿Existe la nota a la que apunta este enlace? Se usa para detectar rotos.
+function noteExists(name) {
+  if (!name) return false;
+  const { byName, bySlug } = getMaps();
+  return byName.has(name) || bySlug.has(slugify(name));
 }
 
 // Devuelve los nombres de notas que enlazan a targetName
 function getBacklinks(targetName, allNotes) {
+  // Camino rápido: el índice cacheado ya tiene los backlinks precalculados.
+  const maps = getMaps();
+  if (!allNotes || allNotes === maps.notes) {
+    const target = maps.byName.get(targetName) || maps.bySlug.get(slugify(targetName));
+    const key = target ? target.name : targetName;
+    return [...(maps.backlinks.get(key) || [])];
+  }
+  // Camino compatible: si el llamador pasa su propia lista (p. ej. recién leída
+  // de disco antes de borrar una nota), se calcula sobre ella.
   const targetSlug = slugify(targetName);
   return allNotes
     .filter((note) =>
@@ -511,37 +650,77 @@ function getBacklinks(targetName, allNotes) {
     .map((note) => note.name);
 }
 
-// Construye el índice de la bóveda en memoria y lo devuelve como string
-function buildIndex(allNotes) {
+// Construye el índice de la bóveda en memoria y lo devuelve como string.
+// - modo `full: false` (por defecto): solo el árbol de categorías con el número
+//   de notas de cada una. Es un mapa de orientación de unos cientos de tokens.
+// - modo `full: true`: además, cada nota con sus tags y su número de backlinks.
+//   En una bóveda de 340 notas eso son ~11.000 tokens, así que se pide a
+//   propósito y, preferiblemente, acotado con `category`.
+function buildIndex(allNotes, { full = false, category = null } = {}) {
+  const notes = category
+    ? allNotes.filter((n) => n.category === category || n.category.startsWith(category + '/'))
+    : allNotes;
+
   const byCategory = {};
-  for (const note of allNotes) {
+  for (const note of notes) {
     const cat = note.category || 'sin-categoria';
     if (!byCategory[cat]) byCategory[cat] = [];
     byCategory[cat].push(note);
   }
 
-  const backlinksCount = {};
-  for (const note of allNotes) {
-    backlinksCount[note.name] = getBacklinks(note.name, allNotes).length;
-  }
+  const { backlinks } = getMaps();
+  const scope = category ? ` — categoría "${category}"` : '';
+  let index = `# Base de Conocimiento — Índice${scope}\n\nÚltima actualización: ${today()}\n\n`;
+  index += `> ${notes.length} ${notes.length === 1 ? 'nota' : 'notas'} en ${Object.keys(byCategory).length} categoría(s)\n\n`;
 
-  let index = `# Base de Conocimiento — Índice\n\nÚltima actualización: ${today()}\n\n`;
-  const totalNotas = allNotes.length;
-  index += `> ${totalNotas} ${totalNotas === 1 ? 'nota' : 'notas'} en total\n\n`;
-
-  for (const [cat, notes] of Object.entries(byCategory).sort()) {
-    index += `## ${cat} (${notes.length} ${notes.length === 1 ? 'nota' : 'notas'})\n`;
-    for (const note of notes.sort((a, b) => a.name.localeCompare(b.name))) {
-      const tags = Array.isArray(note.frontmatter.tags)
-        ? note.frontmatter.tags.join(', ')
-        : note.frontmatter.tags || '';
-      const bl = backlinksCount[note.name] || 0;
-      index += `- [[${note.name}]] — tags: ${tags || 'sin tags'} — ${bl} backlinks\n`;
+  for (const [cat, catNotes] of Object.entries(byCategory).sort()) {
+    index += `## ${cat} (${catNotes.length} ${catNotes.length === 1 ? 'nota' : 'notas'})\n`;
+    if (full) {
+      for (const note of catNotes.sort((a, b) => a.name.localeCompare(b.name))) {
+        const tags = Array.isArray(note.frontmatter.tags)
+          ? note.frontmatter.tags.join(', ')
+          : note.frontmatter.tags || '';
+        const bl = (backlinks.get(note.name) || new Set()).size;
+        index += `- [[${note.name}]] — tags: ${tags || 'sin tags'} — ${bl} backlinks\n`;
+      }
     }
     index += '\n';
   }
 
+  if (!full) {
+    index += '_Solo el árbol de categorías. Para ver las notas de una categoría: `list_notes(category)`; para el listado completo: `get_index(full: true)`._\n';
+  }
+
   return index;
+}
+
+// ─── Índice de secciones de una nota ────────────────────────────────────────
+// Devuelve los encabezados markdown del cuerpo (nivel, título y nº de líneas de
+// la sección), ignorando los que estén dentro de bloques de código.
+function outlineOf(body) {
+  const lines = body.split('\n');
+  const headings = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^```/.test(lines[i])) inFence = !inFence;
+    if (inFence) continue;
+    const m = lines[i].match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (m) headings.push({ level: m[1].length, title: m[2].trim(), line: i });
+  }
+  return headings.map((h, idx) => {
+    const next = headings.slice(idx + 1).find((x) => x.level <= h.level);
+    const end = next ? next.line : lines.length;
+    return { ...h, lines: end - h.line };
+  });
+}
+
+// ─── Notas programadas ──────────────────────────────────────────────────────
+// Convención de la bóveda: una nota con fecha empieza por una línea
+// `> APARECER: AAAA-MM-DD` (admite negritas y texto detrás). Devuelve la fecha
+// como string ISO o null si la nota no la lleva.
+function parseAparecer(body) {
+  const m = body.match(/APARECER:?\**\s*:?\s*\**\s*(\d{4}-\d{2}-\d{2})/i);
+  return m ? m[1] : null;
 }
 
 // Extrae hashtags `#snake_case` del cuerpo (excluye bloques de código)
@@ -549,6 +728,34 @@ function extractHashtags(body) {
   const stripped = stripCode(body);
   const matches = [...stripped.matchAll(/(?:^|\s)(#[a-z][a-z0-9_]*)/g)];
   return [...new Set(matches.map((m) => m[1]))];
+}
+
+// Extrae hashtags MAL FORMADOS: los que llevan guión medio (`#nano-banana`).
+// Importan porque los editores que agrupan por hashtag (iA Writer) no los
+// reconocen, y porque el extractor oficial los trunca en el guión, con lo que
+// `#santa-marta-crea` acaba contando como la etiqueta `#santa`. Sirven para
+// auditar la taxonomía y corregirlos a snake_case.
+function extractDashedHashtags(body) {
+  const stripped = stripCode(body);
+  const matches = [...stripped.matchAll(/(?:^|\s)(#[a-z][a-z0-9_]*(?:-[a-z0-9_]+)+)/g)];
+  return [...new Set(matches.map((m) => m[1]))];
+}
+
+// Todas las etiquetas de una nota: hashtags del cuerpo + tags del frontmatter
+// YAML (que la doctrina jubiló pero que muchas notas antiguas conservan). Se
+// devuelven normalizadas y sin `#` para poder filtrar por cualquiera de las dos.
+function allTagsOf(note) {
+  const out = new Set();
+  const body = note.body !== undefined ? note.body : '';
+  for (const h of extractHashtags(body)) out.add(h.slice(1));
+  for (const h of extractDashedHashtags(body)) out.add(h.slice(1).replace(/-/g, '_'));
+  const yaml = note.frontmatter?.tags;
+  const list = Array.isArray(yaml) ? yaml : (yaml ? [yaml] : []);
+  for (const t of list) {
+    const clean = String(t).trim().replace(/^#/, '');
+    if (clean) out.add(clean.replace(/-/g, '_'));
+  }
+  return out;
 }
 
 // Separa el cuerpo del bloque final de hashtags y/o footer de backlinks añadido por read_note.
@@ -759,12 +966,11 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.1.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.2.0' },
   { capabilities: { tools: {} } }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
+const ALL_TOOLS = [
     // ── Bloque base: lectura ──────────────────────────────────────────────
     {
       name: 'read_note',
@@ -777,10 +983,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'search_notes',
-      description: 'Buscar notas por texto libre. Con múltiples palabras busca notas que contengan TODAS (lógica AND). Busca en títulos, contenido y tags.',
+      description: 'Buscar notas por texto libre. Con múltiples palabras busca notas que contengan TODAS (lógica AND). Busca en títulos, contenido y etiquetas, y no distingue mayúsculas ni acentos: "piramide" y "pirámide" devuelven lo mismo. Los resultados se ordenan por relevancia (título y etiquetas antes que cuerpo) y vienen limitados; usa limit o category para acotar.',
       inputSchema: {
         type: 'object',
-        properties: { query: { type: 'string', description: 'Término de búsqueda' } },
+        properties: {
+          query: { type: 'string', description: 'Término de búsqueda' },
+          category: { type: 'string', description: 'Acotar la búsqueda a una categoría y sus subcarpetas (opcional)' },
+          limit: { type: 'number', description: 'Máximo de resultados. Por defecto 20' },
+        },
         required: ['query'],
       },
     },
@@ -791,14 +1001,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           category: { type: 'string', description: 'Categoría para filtrar (recursiva): devuelve las notas de esa categoría y de todas sus subcarpetas. Usa la categoría raíz (p. ej. "conocimiento") para todo el árbol, o una subcategoría completa (p. ej. "conocimiento/problemas-resueltos") para acotar a una subcarpeta.' },
-          tag: { type: 'string', description: 'Tag opcional para filtrar notas que contengan ese tag' },
+          tag: { type: 'string', description: 'Etiqueta opcional para filtrar. Busca tanto en los hashtags del cuerpo (#tipo_proceso) como en los tags del frontmatter YAML de las notas antiguas. Se puede escribir con o sin almohadilla.' },
         },
       },
     },
     {
       name: 'get_index',
-      description: 'Obtener el índice completo de la base de conocimiento. Útil para orientarse al inicio de una sesión.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'Obtener el mapa de categorías de la base de conocimiento con el número de notas de cada una. Devuelve solo el árbol, que es barato; el listado nota a nota (caro en bóvedas grandes) hay que pedirlo con full:true y conviene acotarlo con category.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional)' },
+          full: { type: 'boolean', description: 'Si true, lista además cada nota con sus tags y backlinks. Puede ser muy largo: úsalo junto a category. Por defecto false.' },
+        },
+      },
     },
 
     // ── Bloque base: escritura ────────────────────────────────────────────
@@ -1075,8 +1291,65 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-  ],
-}));
+
+    // ── Bloque 5: rutina de la bóveda ────────────────────────────────────
+    {
+      name: 'due_notes',
+      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          category: { type: 'string', description: 'Carpeta de notas programadas. Por defecto "programado".' },
+          include_upcoming: { type: 'boolean', description: 'Si true, incluye también las que aún no han vencido, con su fecha y los días que faltan. Por defecto false.' },
+        },
+      },
+    },
+    {
+      name: 'list_sections',
+      description: 'Listar el índice de secciones (los encabezados) de una nota, con su nivel y su tamaño en líneas, sin devolver el contenido. Sirve para orientarse en notas largas y decidir qué leer: después se lee solo lo necesario con read_section en vez de cargar la nota entera.',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'Nombre de la nota sin extensión .md' } },
+        required: ['name'],
+      },
+    },
+    {
+      name: 'audit_tags',
+      description: 'Auditar, revisar o comprobar la salud de las etiquetas de la bóveda: hashtags mal formados con guión medio (que los editores no agrupan y el extractor trunca), variantes del mismo concepto, etiquetas usadas una sola vez y notas que aún conservan tags en el frontmatter YAML. Devuelve un informe para limpiar la taxonomía.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fix_dashes: { type: 'boolean', description: 'Si true, corrige en las notas los hashtags con guión medio pasándolos a snake_case (#nano-banana → #nano_banana). Por defecto false: solo informa.' },
+        },
+      },
+    },
+];
+
+// ─── Perfil de herramientas expuestas ───────────────────────────────────────
+// El listado de tools se envía en CADA sesión y cuenta contra la ventana de
+// contexto (las 32 completas rondan los 4.000 tokens). En un cliente con ventana
+// corta eso es un peaje que se paga sin usarlo. Con KB_TOOLS=core se exponen
+// solo las de uso diario; el valor por defecto (full) mantiene todas.
+const TOOLS_PROFILE = (process.env.KB_TOOLS || 'full').toLowerCase();
+const CORE_TOOLS = new Set([
+  'read_note', 'search_notes', 'list_notes', 'peek_note', 'read_section', 'list_sections',
+  'write_note', 'edit_note', 'append_to_note', 'update_section',
+  'move_note', 'delete_note', 'due_notes', 'find_backlinks', 'recently_updated',
+]);
+
+function visibleTools() {
+  let tools = ALL_TOOLS;
+  // Las tools de anotaciones solo tienen sentido con la feature activada.
+  if (!ANNOTATIONS_ENABLED) {
+    tools = tools.filter((t) => t.name !== 'read_authorship' && t.name !== 'migrate_annotations');
+  }
+  if (TOOLS_PROFILE === 'core') {
+    tools = tools.filter((t) => CORE_TOOLS.has(t.name));
+  }
+  return tools;
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: visibleTools() }));
 
 // ─── Handler de llamadas ──────────────────────────────────────────────────
 
@@ -1087,6 +1360,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   normalizeArgs(args);
 
   try {
+    // ── Validación de argumentos ────────────────────────────────────────
+    // Si falta un parámetro obligatorio o llega con otro nombre (old_string en
+    // vez de old_text, por ejemplo), hay que decirlo. Antes el argumento llegaba
+    // como undefined y la tool seguía adelante: edit_note respondía "no se
+    // encontró el texto a reemplazar", que manda a buscar el fallo en la nota
+    // cuando el fallo estaba en la llamada.
+    const definicion = ALL_TOOLS.find((t) => t.name === name);
+    if (definicion?.inputSchema) {
+      const esperados = Object.keys(definicion.inputSchema.properties || {});
+      const requeridos = definicion.inputSchema.required || [];
+      const faltan = requeridos.filter((p) => args?.[p] === undefined || args[p] === null || args[p] === '');
+      const sobran = Object.keys(args || {}).filter((p) => !esperados.includes(p));
+      if (faltan.length) {
+        const pista = sobran.length ? ` Has enviado en su lugar: ${sobran.join(', ')}. Los parámetros de esta herramienta son: ${esperados.join(', ')}.` : '';
+        return {
+          content: [{ type: 'text', text: `Falta(n) parámetro(s) obligatorio(s) en ${name}: ${faltan.join(', ')}.${pista}` }],
+          isError: true,
+        };
+      }
+    }
+
     // ── Modo escritura-solo-bandeja — candado DURO para asistentes locales ──
     // Variable canónica: KB_WRITE_ONLY_INBOX ('1' o 'true'). Se mantiene la
     // compatibilidad con la antigua KB_INBOX_ONLY: si sigue definida, se trata
@@ -1142,7 +1436,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === 'write_note') {
       const slug = args.name ? args.name : slugify(args.title);
       const existingPath = args.name ? findNote(args.name) : null;
-      const categoryDir = path.join(MEMORY_ROOT, args.category);
+      const categoryDir = safeJoin(args.category);
 
       if (!fs.existsSync(categoryDir)) {
         fs.mkdirSync(categoryDir, { recursive: true });
@@ -1206,13 +1500,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // bodyAuthors=null → todo el cuerpo se atribuye a Claude.
       persistNote(
         filePath,
-        { title: args.title, category: args.category, tags: args.tags || [], created },
+        { title: args.title, category: safeCategory(args.category), tags: args.tags || [], created },
         body,
       );
 
       const RESERVED_LINKS = new Set(['HOME', 'home']);
-      const wikilinks = [...stripCode(body).matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
-      const broken = wikilinks.filter((link) => !RESERVED_LINKS.has(link) && !findNote(link));
+      const broken = extractLinkTargets(body).filter((link) => !RESERVED_LINKS.has(link) && !noteExists(link));
 
       let msg = `Nota "${args.title}" ${exists ? 'actualizada' : 'creada'} → ${args.category}/${slug}.md`;
       if (broken.length) {
@@ -1252,42 +1545,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // ── search_notes ────────────────────────────────────────────────────
+    // Búsqueda AND sobre título, etiquetas y cuerpo. Tres decisiones de diseño:
+    //  - Insensible a acentos y mayúsculas: en una bóveda en español, "pirámide"
+    //    y "piramide" tienen que encontrarse la una a la otra.
+    //  - Ordenada por relevancia: una coincidencia en el título o en una etiqueta
+    //    vale más que una perdida en mitad del cuerpo.
+    //  - Acotada: sin límite, una palabra frecuente devuelve decenas de notas con
+    //    su extracto y se lleva por delante media ventana de contexto.
     if (name === 'search_notes') {
       const allNotes = getCachedAllNotes();
-      const terms = args.query.toLowerCase().split(/\s+/).filter(Boolean);
-      const results = [];
+      const terms = foldText(args.query).split(/\s+/).filter(Boolean);
+      if (!terms.length) {
+        return { content: [{ type: 'text', text: 'Indica algún término de búsqueda.' }] };
+      }
+      const limit = Number.isFinite(args.limit) && args.limit > 0 ? Math.floor(args.limit) : 20;
+      const scoped = args.category
+        ? allNotes.filter((n) => n.category === args.category || n.category.startsWith(args.category + '/'))
+        : allNotes;
 
-      for (const note of allNotes) {
-        const content = readNoteFile(note.path);
-        const contentLower = content.toLowerCase();
-        const nameLower = note.name.toLowerCase();
-        const matchesAll = terms.every((term) => contentLower.includes(term) || nameLower.includes(term));
+      const hits = [];
+      for (const note of scoped) {
+        // El cuerpo limpio: sin frontmatter y sin el bloque de anotaciones, que
+        // es metadata interna y ensuciaba los extractos.
+        const cleanBody = note.body || '';
+        const cleanName = note.name.replace(/-/g, ' ');
+        const title = note.frontmatter?.title || cleanName;
+        const foldedBody = foldText(cleanBody);
+        const foldedName = foldText(`${cleanName} ${title}`);
+        const foldedTags = foldText([...allTagsOf(note)].join(' '));
 
-        if (matchesAll) {
-          const idx = contentLower.indexOf(terms[0]);
-          const snippet = idx >= 0
-            ? '...' + content.slice(Math.max(0, idx - 60), Math.min(content.length, idx + 120)).replace(/\n+/g, ' ').trim() + '...'
-            : '';
-          results.push(`**${note.name}** (${note.category})\n${snippet}`);
-        }
+        let score = 0;
+        const matchesAll = terms.every((term) => {
+          const inName = foldedName.includes(term);
+          const inTags = foldedTags.includes(term);
+          const inBody = foldedBody.includes(term);
+          if (inName) score += 10;
+          if (inTags) score += 4;
+          if (inBody) score += 1;
+          return inName || inTags || inBody;
+        });
+        if (!matchesAll) continue;
+
+        const idx = foldedBody.indexOf(terms[0]);
+        const snippet = idx >= 0
+          ? '...' + cleanBody.slice(Math.max(0, idx - 60), Math.min(cleanBody.length, idx + 120)).replace(/\s+/g, ' ').trim() + '...'
+          : '';
+        hits.push({ note, score, snippet });
       }
 
-      if (!results.length) {
-        return { content: [{ type: 'text', text: `Sin resultados para "${args.query}".` }] };
+      if (!hits.length) {
+        const scope = args.category ? ` en "${args.category}"` : '';
+        return { content: [{ type: 'text', text: `Sin resultados para "${args.query}"${scope}.` }] };
       }
-      return { content: [{ type: 'text', text: `${results.length} resultado(s) para "${args.query}":\n\n${results.join('\n\n')}` }] };
+
+      hits.sort((a, b) => b.score - a.score || a.note.name.localeCompare(b.note.name));
+      const shown = hits.slice(0, limit);
+      const lines = shown.map((h) => `**${h.note.name}** (${h.note.category})\n${h.snippet}`);
+      const extra = hits.length > shown.length
+        ? `\n\n_Mostrando ${shown.length} de ${hits.length}. Afina la búsqueda, acota con category o sube limit._`
+        : '';
+      return { content: [{ type: 'text', text: `${hits.length} resultado(s) para "${args.query}":\n\n${lines.join('\n\n')}${extra}` }] };
     }
 
     // ── list_notes ──────────────────────────────────────────────────────
     if (name === 'list_notes') {
       const allNotes = getCachedAllNotes();
+      // El filtro por etiqueta mira las dos convenciones que conviven en la
+      // bóveda: los hashtags del cuerpo (la vigente) y los tags del frontmatter
+      // YAML de las notas antiguas. Antes solo leía el YAML, así que filtrar por
+      // una etiqueta escrita en el cuerpo devolvía cero notas.
+      const wantedTag = args.tag ? args.tag.trim().replace(/^#/, '').replace(/-/g, '_').toLowerCase() : null;
       const filtered = allNotes.filter((n) => {
         const matchCategory = !args.category || n.category === args.category || n.category.startsWith(args.category + '/');
-        const matchTag = !args.tag || (
-          Array.isArray(n.frontmatter.tags)
-            ? n.frontmatter.tags.includes(args.tag)
-            : n.frontmatter.tags === args.tag
-        );
+        const matchTag = !wantedTag || [...allTagsOf(n)].some((t) => t.toLowerCase() === wantedTag);
         return matchCategory && matchTag;
       });
 
@@ -1299,9 +1629,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: !args.category && !args.tag ? 'La base de conocimiento está vacía.' : `No hay notas${filterDesc}.` }] };
       }
 
+      const { backlinks: backlinkMap } = getMaps();
       const backlinksCount = {};
       for (const note of allNotes) {
-        backlinksCount[note.name] = getBacklinks(note.name, allNotes).length;
+        backlinksCount[note.name] = (backlinkMap.get(note.name) || new Set()).size;
       }
 
       const lines = filtered
@@ -1337,20 +1668,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── get_index ───────────────────────────────────────────────────────
     if (name === 'get_index') {
       const allNotes = getCachedAllNotes();
-      const content = buildIndex(allNotes);
+      const content = buildIndex(allNotes, { full: args?.full === true, category: args?.category || null });
       return { content: [{ type: 'text', text: content }] };
     }
 
     // ── create_category ─────────────────────────────────────────────────
+    // Se slugifica CADA segmento de la ruta, no la ruta entera: así una categoría
+    // anidada ("conocimiento/problemas-resueltos") se crea como carpetas anidadas
+    // de verdad. Antes la slugificación se comía las barras y
+    // "problemas-resueltos/mcp" acababa siendo una sola carpeta llamada
+    // "problemas-resueltosmcp". De paso, los segmentos vacíos o ".." se
+    // descartan, así que la ruta nunca puede salirse de la bóveda.
     if (name === 'create_category') {
-      const slug = slugify(args.name);
-      const dir = path.join(MEMORY_ROOT, slug);
+      const slug = String(args.name)
+        .split('/')
+        .map((seg) => slugify(seg))
+        .filter(Boolean)
+        .join('/');
+      if (!slug) {
+        return { content: [{ type: 'text', text: `Nombre de categoría no válido: "${args.name}".` }], isError: true };
+      }
+      const dir = safeJoin(slug);
       if (fs.existsSync(dir)) {
         return { content: [{ type: 'text', text: `La categoría "${slug}" ya existe.` }] };
       }
       fs.mkdirSync(dir, { recursive: true });
       invalidateCache();
-      return { content: [{ type: 'text', text: `Categoría "${slug}" creada en memoria/${slug}/` }] };
+      return { content: [{ type: 'text', text: `Categoría "${slug}" creada.` }] };
     }
 
     // ── move_note ───────────────────────────────────────────────────────
@@ -1362,9 +1706,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { frontmatter, body } = parseFrontmatter(existing);
       const newTitle = args.new_title || frontmatter.title || args.name;
       const newSlug = slugify(newTitle);
-      const newCategory = args.new_category || frontmatter.category || path.relative(MEMORY_ROOT, path.dirname(srcPath));
+      const newCategory = safeCategory(args.new_category || frontmatter.category || path.relative(MEMORY_ROOT, path.dirname(srcPath)));
 
-      const destDir = path.join(MEMORY_ROOT, newCategory);
+      const destDir = safeJoin(newCategory);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
 
       const destPath = path.join(destDir, `${newSlug}.md`);
@@ -1459,7 +1803,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── delete_category ─────────────────────────────────────────────────
     if (name === 'delete_category') {
       const slug = slugify(args.name);
-      const dir = path.join(MEMORY_ROOT, slug);
+      const dir = safeJoin(slug);
       if (!fs.existsSync(dir)) return { content: [{ type: 'text', text: `La categoría "${slug}" no existe.` }] };
 
       const notes = getAllNotes().filter((n) => n.category === slug || n.category.startsWith(`${slug}/`));
@@ -1624,7 +1968,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const broken = [];
 
       for (const note of allNotes) {
-        const bad = note.wikilinks.filter((link) => !RESERVED_LINKS.has(link) && !findNote(link));
+        // note.wikilinks ya trae los destinos resueltos (sin alias ni anclas) y
+        // noteExists los busca en el índice en memoria. Antes se comparaba el
+        // texto crudo del enlace y se escaneaba el disco por cada uno: los
+        // enlaces con alias salían como rotos aunque la nota existiera, y listar
+        // los rotos costaba ~90.000 lecturas de directorio.
+        const bad = note.wikilinks.filter((link) => !RESERVED_LINKS.has(link) && !noteExists(link));
         if (bad.length) broken.push({ note: note.name, links: [...new Set(bad)] });
       }
 
@@ -1741,7 +2090,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Si cambia category, mover archivo físicamente
       let destPath = note.filePath;
       if (fields.category && fields.category !== note.frontmatter.category) {
-        const destDir = path.join(MEMORY_ROOT, fields.category);
+        fields.category = safeCategory(fields.category);
+        const destDir = safeJoin(fields.category);
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
         destPath = path.join(destDir, path.basename(note.filePath));
       }
@@ -1844,8 +2194,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // ── move_category ───────────────────────────────────────────────────
     if (name === 'move_category') {
-      const srcDir = path.join(MEMORY_ROOT, args.name);
-      const destDir = path.join(MEMORY_ROOT, args.new_name);
+      const srcDir = safeJoin(args.name);
+      const destDir = safeJoin(args.new_name);
 
       if (!fs.existsSync(srcDir)) return { content: [{ type: 'text', text: `La categoría "${args.name}" no existe.` }] };
       if (fs.existsSync(destDir)) return { content: [{ type: 'text', text: `La categoría destino "${args.new_name}" ya existe.` }] };
@@ -1896,9 +2246,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!tags.length) issues.push('No hay hashtags `#snake_case` en el cuerpo');
 
       const RESERVED_LINKS = new Set(['HOME', 'home']);
-      const wikilinks = [...stripCode(note.body).matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
-      const broken = [...new Set(wikilinks.filter((l) => !RESERVED_LINKS.has(l) && !findNote(l)))];
+      const broken = [...new Set(extractLinkTargets(note.body).filter((l) => !RESERVED_LINKS.has(l) && !noteExists(l)))];
       if (broken.length) issues.push(`Wikilinks rotos: ${broken.map((b) => `[[${b}]]`).join(', ')}`);
+
+      const dashed = extractDashedHashtags(note.body);
+      if (dashed.length) {
+        issues.push(`Hashtags con guión medio (los editores no los agrupan y el extractor los trunca): ${dashed.join(', ')} → usa ${dashed.map((d) => d.replace(/-/g, '_')).join(', ')}`);
+      }
 
       if (!issues.length) return { content: [{ type: 'text', text: `Nota "${args.name}" válida. Sin problemas detectados.` }] };
       return { content: [{ type: 'text', text: `Nota "${args.name}" — ${issues.length} problema(s):\n${issues.map((i) => `- ${i}`).join('\n')}` }] };
@@ -1906,7 +2260,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // ── bulk_move ───────────────────────────────────────────────────────
     if (name === 'bulk_move') {
-      const destDir = path.join(MEMORY_ROOT, args.new_category);
+      const destDir = safeJoin(args.new_category);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
 
       const results = [];
@@ -2017,6 +2371,137 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `Errores: ${errors.length}${errorText}`,
         }],
       };
+    }
+
+    // ── due_notes ───────────────────────────────────────────────────────
+    // Comprobación de arranque de sesión: qué notas programadas vencen hoy.
+    // Antes había que abrir una por una para leer su fecha; esto lo resuelve en
+    // una sola llamada y, el día que no toca nada, la respuesta es una línea.
+    if (name === 'due_notes') {
+      const category = args?.category || 'programado';
+      const allNotes = getCachedAllNotes();
+      const scoped = allNotes.filter((n) => n.category === category || n.category.startsWith(category + '/'));
+
+      if (!scoped.length) {
+        return { content: [{ type: 'text', text: `No hay notas en "${category}".` }] };
+      }
+
+      const hoy = today();
+      const due = [];
+      const upcoming = [];
+      const sinFecha = [];
+      for (const note of scoped) {
+        const fecha = parseAparecer(note.body || '');
+        if (!fecha) { sinFecha.push(note.name); continue; }
+        const item = { name: note.name, fecha, title: note.frontmatter?.title || note.name };
+        if (fecha <= hoy) due.push(item); else upcoming.push(item);
+      }
+      due.sort((a, b) => a.fecha.localeCompare(b.fecha));
+      upcoming.sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+      const partes = [];
+      if (due.length) {
+        partes.push(`${due.length} nota(s) programada(s) para hoy o antes (${hoy}):\n` +
+          due.map((d) => `- **${d.name}** — APARECER: ${d.fecha}${d.fecha < hoy ? ' (vencida)' : ''}\n  ${d.title}`).join('\n'));
+      } else {
+        partes.push(`Nada programado para hoy (${hoy}). ${scoped.length} nota(s) en "${category}", todas con fecha posterior.`);
+      }
+      if (args?.include_upcoming && upcoming.length) {
+        const dias = (f) => Math.round((new Date(f) - new Date(hoy)) / 86400000);
+        partes.push(`Próximas:\n` + upcoming.map((u) => `- ${u.name} — ${u.fecha} (en ${dias(u.fecha)} día(s))`).join('\n'));
+      }
+      if (sinFecha.length) {
+        partes.push(`Sin línea APARECER (revisar): ${sinFecha.join(', ')}`);
+      }
+      return { content: [{ type: 'text', text: partes.join('\n\n') }] };
+    }
+
+    // ── list_sections ───────────────────────────────────────────────────
+    if (name === 'list_sections') {
+      const note = loadNote(args.name);
+      if (!note) return { content: [{ type: 'text', text: `Nota "${args.name}" no encontrada.` }] };
+
+      const outline = outlineOf(note.body);
+      if (!outline.length) {
+        return { content: [{ type: 'text', text: `La nota "${args.name}" no tiene encabezados.` }] };
+      }
+      const totalLines = note.body.split('\n').length;
+      const lines = outline.map((h) => `${'  '.repeat(Math.max(0, h.level - 1))}- ${h.title} (nivel ${h.level}, ${h.lines} líneas)`);
+      return {
+        content: [{
+          type: 'text',
+          text: `Secciones de "${args.name}" — ${outline.length} encabezado(s), ${totalLines} líneas en total:\n\n${lines.join('\n')}\n\nLee solo lo que necesites con read_section.`,
+        }],
+      };
+    }
+
+    // ── audit_tags ──────────────────────────────────────────────────────
+    if (name === 'audit_tags') {
+      const allNotes = getCachedAllNotes();
+      const conteo = new Map();
+      const conGuion = [];
+      const conYaml = [];
+
+      for (const note of allNotes) {
+        for (const h of extractHashtags(note.body || '')) {
+          conteo.set(h, (conteo.get(h) || 0) + 1);
+        }
+        const dashed = extractDashedHashtags(note.body || '');
+        if (dashed.length) conGuion.push({ note: note.name, tags: dashed });
+        const yaml = note.frontmatter?.tags;
+        const list = Array.isArray(yaml) ? yaml : (yaml ? [yaml] : []);
+        if (list.length) conYaml.push(note.name);
+      }
+
+      // Corrección opcional de los hashtags con guión medio.
+      let corregidas = 0;
+      const errores = [];
+      if (args?.fix_dashes && conGuion.length) {
+        for (const { note: noteName, tags } of conGuion) {
+          try {
+            const note = loadNote(noteName);
+            if (!note) { errores.push(`${noteName}: no encontrada`); continue; }
+            let newBody = note.body;
+            for (const tag of tags) {
+              const fixed = tag.replace(/-/g, '_');
+              newBody = newBody.split(tag).join(fixed);
+            }
+            if (newBody === note.body) continue;
+            const diff = computeBodyDiff(note.body, newBody);
+            // Cambio MECÁNICO de etiqueta: se conserva la autoría del fragmento.
+            const original = uniqueAuthorOfSegment(note.bodyAuthors, diff.editStart, diff.oldLength);
+            const newAuthors = applyEditToAuthors(
+              note.bodyAuthors, diff.editStart, diff.oldLength, diff.newLength, original || CLAUDE_AUTHOR,
+            );
+            persistNote(note.filePath, note.frontmatter, newBody, newAuthors, { preserveUpdated: true });
+            corregidas++;
+          } catch (e) {
+            errores.push(`${noteName}: ${e.message}`);
+          }
+        }
+        invalidateCache();
+      }
+
+      const usadasUnaVez = [...conteo.entries()].filter(([, n]) => n === 1).map(([t]) => t);
+      const tipos = [...conteo.keys()].filter((t) => t.startsWith('#tipo_')).sort();
+
+      const partes = [
+        `Auditoría de etiquetas — ${conteo.size} hashtags distintos en ${allNotes.length} notas.`,
+        conGuion.length
+          ? `**Con guión medio (${conGuion.length} nota(s)):** los editores no los agrupan y el extractor los trunca en el guión.\n` +
+            conGuion.map((c) => `- ${c.note}: ${c.tags.join(', ')} → ${c.tags.map((t) => t.replace(/-/g, '_')).join(', ')}`).join('\n')
+          : 'Sin hashtags con guión medio.',
+        `**Variantes de tipo en uso (${tipos.length}):** ${tipos.join(' ') || 'ninguna'}`,
+        `**Usadas una sola vez (${usadasUnaVez.length}):** ${usadasUnaVez.slice(0, 40).join(' ')}${usadasUnaVez.length > 40 ? ' …' : ''}`,
+        `**Notas con tags en el frontmatter YAML (${conYaml.length}):** la doctrina las quiere en el cuerpo; el filtro de list_notes ya mira las dos.`,
+      ];
+      if (args?.fix_dashes) {
+        partes.push(`**Corrección aplicada:** ${corregidas} nota(s) actualizadas${errores.length ? `, ${errores.length} error(es):\n- ${errores.join('\n- ')}` : '.'}`);
+      } else if (conGuion.length) {
+        partes.push('_Para corregir los guiones automáticamente: `audit_tags(fix_dashes: true)`._');
+      }
+
+      return { content: [{ type: 'text', text: partes.join('\n\n') }] };
     }
 
     return { content: [{ type: 'text', text: `Herramienta desconocida: ${name}` }], isError: true };

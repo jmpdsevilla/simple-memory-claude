@@ -8,6 +8,58 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.2.0] — 2026-07-25
+
+Versión de fortalecimiento: seguridad de rutas, rendimiento, búsqueda en español y tres herramientas nuevas. La API existente no cambia — ninguna herramienta cambia de nombre ni de parámetros.
+
+### Seguridad
+
+**Las rutas no pueden salirse de la bóveda.** El parámetro `category` (y equivalentes) se concatenaba a la raíz sin comprobar nada, así que un valor como `../../otra-carpeta` escribía o borraba fuera de la bóveda. Ahora toda ruta construida a partir de argumentos se resuelve y se verifica que quede dentro de la raíz configurada; si no, la operación se rechaza con un error claro. Afecta a `write_note`, `create_category`, `move_note`, `delete_category`, `update_frontmatter`, `move_category` y `bulk_move`.
+
+**Validación de argumentos.** Si falta un parámetro obligatorio o llega con otro nombre (`old_string` en vez de `old_text`, un clásico), el servidor lo dice y enumera los parámetros correctos. Antes el argumento llegaba como `undefined` y la herramienta seguía adelante: `edit_note` respondía "no se encontró el texto a reemplazar", lo que mandaba a buscar el fallo en la nota cuando el fallo estaba en la llamada.
+
+### Rendimiento
+
+**Resolución de notas en memoria.** Localizar una nota por su nombre recorría el disco entero en cada llamada, y `list_broken_links` lo hacía una vez por wikilink. En una bóveda de 340 notas con 1.767 enlaces eran ~90.000 lecturas de directorio y 1,4 segundos; ahora se resuelve contra el índice ya cacheado: **1 ms**.
+
+**Backlinks en una pasada.** El cálculo era O(N²) (por cada nota se recorrían todas las demás). Ahora se construye un mapa completo en un solo recorrido, junto al índice.
+
+**La caché guarda el contenido.** `search_notes` releía la bóveda entera del disco en cada búsqueda. El índice ya leía cada archivo, así que ahora conserva el texto: la búsqueda no vuelve a tocar disco.
+
+### Búsqueda
+
+- **Insensible a acentos.** "pirámide" y "piramide" devuelven lo mismo. En una bóveda en español, la tilde partía los resultados en dos conjuntos incompletos y no había forma de saberlo.
+- **Ordenada por relevancia:** una coincidencia en el título o en una etiqueta pesa más que una perdida en mitad del cuerpo.
+- **Acotada:** nuevo parámetro `limit` (20 por defecto) y `category` para restringir el ámbito. Si hay más resultados, se avisa de cuántos quedan.
+- **Extractos limpios:** ya no aparecen el frontmatter ni el bloque de anotaciones en los fragmentos de resultado.
+
+### Contexto
+
+**`get_index` ya no es una trampa.** Devolvía la bóveda entera nota a nota —unos 11.000 tokens en una bóveda mediana— y su descripción invitaba a llamarlo "al inicio de una sesión". Ahora devuelve por defecto el árbol de categorías con sus conteos (~800 tokens) y acepta `category` y `full: true` para el detalle.
+
+**`KB_TOOLS=core`.** El listado de herramientas viaja en cada sesión y cuenta contra la ventana de contexto. Con este perfil se exponen solo las 15 de uso diario (2.400 tokens en vez de 4.500), para clientes con ventana corta. Por defecto se mantienen todas.
+
+**Las herramientas de autoría solo aparecen si están activadas.** `read_authorship` y `migrate_annotations` se anunciaban siempre, aunque `KB_ENABLE_ANNOTATIONS` estuviera desactivado.
+
+### Añadido
+
+- **`due_notes`** — devuelve solo las notas programadas cuya fecha `> APARECER: AAAA-MM-DD` ya ha llegado. La comprobación de arranque pasa de abrir las notas una a una a una única llamada; el día que no toca nada, la respuesta es una línea. Con `include_upcoming` lista también las futuras.
+- **`list_sections`** — índice de encabezados de una nota (nivel y tamaño en líneas) sin devolver el contenido. Permite orientarse en notas largas y luego leer solo lo necesario con `read_section`.
+- **`audit_tags`** — auditoría de etiquetas: hashtags con guión medio (que los editores no agrupan y el extractor trunca en el guión, convirtiendo `#santa-marta-crea` en `#santa`), variantes de tipo, etiquetas de uso único y notas con tags en el frontmatter YAML. Con `fix_dashes: true` corrige los guiones conservando la fecha de modificación y la autoría.
+
+### Corregido
+
+- **Wikilinks con alias y con ancla.** `[[nota|alias]]`, `[[nota#Sección]]` y `[[#Sección]]` se contaban como enlaces rotos aunque la nota existiera, y sus backlinks no se registraban. Ahora se resuelve el destino real del enlace.
+- **`create_category` con rutas anidadas.** Slugificaba la ruta entera y se comía las barras: `problemas-resueltos/mcp` acababa siendo una única carpeta llamada `problemas-resueltosmcp`. Ahora se slugifica cada segmento y se crean las carpetas anidadas.
+- **`list_notes(tag)` solo miraba el frontmatter YAML.** Filtrar por una etiqueta escrita como hashtag en el cuerpo —la convención vigente— devolvía cero notas. Ahora mira las dos.
+- **`validate_note`** avisa además de los hashtags con guión medio.
+
+### Pruebas
+
+Suite de pruebas (`npm test`, `node --test`, sin dependencias): 34 casos que levantan el servidor real por stdio contra bóvedas temporales y comprueban seguridad de rutas, búsqueda, wikilinks, etiquetas, programadas, perfiles de herramientas y el candado de escritura-solo-bandeja. Integración continua en GitHub Actions sobre Node 18, 20 y 22.
+
+---
+
 ## [2.1.0] — 2026-07-21
 
 ### Añadido

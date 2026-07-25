@@ -1,13 +1,16 @@
-# Referencia de herramientas — Las 29 herramientas MCP
+# Referencia de herramientas — Las 32 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v1.5.1).
+Referencia completa de todas las herramientas de BovedIA (v2.2.0).
 
-Las herramientas se agrupan en cinco bloques:
+Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
 2. **Edición dirigida** (5) — retoques incrementales sin reenviar la nota entera
 3. **Mantenimiento de wikilinks y tags** (6) — operaciones sobre enlaces y tags de toda la bóveda
 4. **Lecturas baratas y mantenimiento** (7) — lecturas parciales y limpieza
-5. **Autoría** (2) — se listan siempre, pero solo operan con `KB_ENABLE_ANNOTATIONS=1`
+5. **Autoría** (2) — solo se exponen con `KB_ENABLE_ANNOTATIONS=1`
+6. **Rutina de la bóveda** (3) — programadas, secciones y auditoría de etiquetas
+
+Con `KB_TOOLS=core` el servidor expone solo las 15 de uso diario, para clientes con poca ventana de contexto. Por defecto se exponen todas.
 
 ---
 
@@ -35,24 +38,31 @@ Lee el contenido completo de una nota más sus backlinks.
 
 ### search_notes
 
-Busca notas por texto libre con lógica AND.
+Busca notas por texto libre con lógica AND. No distingue mayúsculas ni acentos: "pirámide" y "piramide" devuelven lo mismo. Los resultados se ordenan por relevancia (título y etiquetas por delante del cuerpo) y los extractos van limpios de frontmatter y de metadatos de autoría.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `query` | string | sí | Términos de búsqueda (separados por espacios) |
+| `category` | string | no | Acotar a una categoría y sus subcarpetas |
+| `limit` | number | no | Máximo de resultados. Por defecto 20 |
 
 ### list_notes
 
-Lista notas con sus metadatos, opcionalmente filtradas. El filtro de categoría es recursivo (incluye subcarpetas).
+Lista notas con sus metadatos, opcionalmente filtradas. El filtro de categoría es recursivo (incluye subcarpetas). El filtro por etiqueta mira tanto los hashtags del cuerpo como los tags del frontmatter YAML.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `category` | string | no | Categoría a filtrar (recursiva) |
-| `tag` | string | no | Filtro por tag |
+| `tag` | string | no | Filtro por etiqueta, con o sin `#` |
 
 ### get_index
 
-Devuelve el índice completo de la bóveda con recuentos y backlinks. Sin parámetros.
+Devuelve el mapa de categorías con el número de notas de cada una. El listado nota a nota es caro en bóvedas grandes, así que se pide aparte con `full: true` y conviene acotarlo con `category`.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `category` | string | no | Acotar a una categoría y sus subcarpetas |
+| `full` | boolean | no | Listar cada nota con sus tags y backlinks. Por defecto false |
 
 ### delete_note
 
@@ -274,7 +284,7 @@ Mueve varias notas a la misma categoría de destino en una sola llamada. No reno
 
 ## Bloque 5 — Autoría (opcional)
 
-Estas dos herramientas se listan siempre, pero solo operan cuando el servidor arranca con `KB_ENABLE_ANNOTATIONS=1` (sin ese flag, informan de que están desactivadas). Registran la autoría por rangos según la spec [Markdown Annotations](https://github.com/iainc/Markdown-Annotations).
+Estas dos herramientas solo se exponen cuando el servidor arranca con `KB_ENABLE_ANNOTATIONS=1`. Registran la autoría por rangos según la spec [Markdown Annotations](https://github.com/iainc/Markdown-Annotations).
 
 ### read_authorship
 
@@ -294,6 +304,35 @@ Añade el bloque de autoría a todas las notas existentes de una sola vez (conse
 
 ---
 
+## Bloque 6 — Rutina de la bóveda
+
+### due_notes
+
+Devuelve solo las notas programadas cuya fecha ya ha llegado. Lee la línea `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta indicada y la compara con hoy. Pensada para la comprobación de arranque de sesión: una sola llamada barata en lugar de abrir las notas una a una.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `category` | string | no | Carpeta de programadas. Por defecto `programado` |
+| `include_upcoming` | boolean | no | Incluir también las futuras, con los días que faltan |
+
+### list_sections
+
+Devuelve el índice de encabezados de una nota (nivel y tamaño en líneas) sin su contenido. Para orientarse en notas largas y leer después solo lo necesario con `read_section`.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `name` | string | sí | Slug de la nota |
+
+### audit_tags
+
+Informe de salud de las etiquetas de la bóveda: hashtags con guión medio, variantes de tipo, etiquetas usadas una sola vez y notas con tags en el frontmatter YAML.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `fix_dashes` | boolean | no | Corregir los hashtags con guión a `snake_case`. Por defecto false (solo informa) |
+
+---
+
 ## Wikilinks
 
 Todas las herramientas que procesan wikilinks usan el formato `[[slug]]`:
@@ -308,8 +347,16 @@ Todas las herramientas que procesan wikilinks usan el formato `[[slug]]`:
 Reglas:
 - Usa siempre el slug de la nota (nombre de archivo kebab-case, sin `.md`)
 - Sin rutas: ~~`[[referencias/x]]`~~ → `[[x]]`
-- Sin alias: ~~`[[x|otro texto]]`~~ → `[[x]]`
 - Los bloques de código quedan excluidos de la detección de wikilinks
+
+El motor entiende además estas variantes, y en todas resuelve el destino real (cuentan como backlink y no se marcan como rotas):
+
+| Forma | Destino |
+|---|---|
+| `[[nota]]` | `nota` |
+| `[[nota\|texto visible]]` | `nota` |
+| `[[nota#Sección]]` | `nota` |
+| `[[#Sección]]` | ninguno: es un ancla dentro de la propia nota |
 
 ---
 

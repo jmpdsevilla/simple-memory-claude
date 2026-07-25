@@ -1,6 +1,6 @@
 {
   "name": "bovedia",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "BovedIA — sistema de memoria personal para Claude Code: notas Markdown en tu disco, sincronizadas en la nube",
   "mcpName": "io.github.jmpdsevilla/bovedia",
   "main": "index.js",
@@ -13,7 +13,8 @@
     "README.md"
   ],
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "claude",
