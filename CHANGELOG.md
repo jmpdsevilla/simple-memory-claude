@@ -8,6 +8,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.5.3] — 2026-07-25
+
+### Corregido
+
+**La cadena vacía vuelve a ser un valor válido.** La validación de argumentos introducida en 2.2.0 trataba `""` como parámetro ausente, así que `edit_note(old_text: "algo", new_text: "")` —la forma natural de **borrar** un fragmento— se rechazaba con "falta el parámetro new_text". Ahora solo se considera ausente lo que no se ha enviado.
+
+---
+
 ## [2.5.2] — 2026-07-25
 
 ### Corregido

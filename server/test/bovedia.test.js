@@ -162,6 +162,17 @@ describe('BovedIA', () => {
       assert.doesNotMatch(texto, /no se encontró el texto/i);
     });
 
+    test('la cadena vacía es un valor válido: borrar es reemplazar por ""', async () => {
+      await kb.llamar('write_note', { title: 'Para borrar', content: 'Linea uno.\nSOBRA ESTA LINEA\nLinea tres.', category: 'sistema' });
+      const { error } = await kb.llamar('edit_note', {
+        name: 'para-borrar', old_text: 'SOBRA ESTA LINEA\n', new_text: '',
+      });
+      assert.equal(error, false);
+      const { texto } = await kb.llamar('read_note', { name: 'para-borrar' });
+      assert.doesNotMatch(texto, /SOBRA/);
+      assert.match(texto, /Linea tres/);
+    });
+
     test('una llamada correcta sigue funcionando', async () => {
       const { error } = await kb.llamar('edit_note', {
         name: 'la-piramide', old_text: 'Regla madre', new_text: 'Regla maestra',

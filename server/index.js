@@ -1030,7 +1030,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.2' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.3' },
   { capabilities: { tools: {} } }
 );
 
@@ -1460,7 +1460,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (definicion?.inputSchema) {
       const esperados = Object.keys(definicion.inputSchema.properties || {});
       const requeridos = definicion.inputSchema.required || [];
-      const faltan = requeridos.filter((p) => args?.[p] === undefined || args[p] === null || args[p] === '');
+      // Ojo: la cadena vacía es un valor LEGÍTIMO (borrar un texto con
+      // edit_note es reemplazarlo por ""). Solo falta lo que no se ha enviado.
+      const faltan = requeridos.filter((p) => args?.[p] === undefined || args[p] === null);
       const sobran = Object.keys(args || {}).filter((p) => !esperados.includes(p));
       if (faltan.length) {
         const pista = sobran.length ? ` Has enviado en su lugar: ${sobran.join(', ')}. Los parámetros de esta herramienta son: ${esperados.join(', ')}.` : '';
