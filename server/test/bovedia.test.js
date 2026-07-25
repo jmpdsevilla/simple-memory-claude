@@ -305,7 +305,14 @@ describe('BovedIA', () => {
 
   describe('etiquetas', () => {
     test('audit_tags detecta los hashtags con guión medio', async () => {
-      await kb.llamar('write_note', { title: 'Con guiones', content: 'Cuerpo.\n\n#nano-banana #tipo_referencia', category: 'conocimiento' });
+      // Se escribe el archivo directamente en disco: por el MCP ya no pueden
+      // entrar (la higiene automática los corrige al escribir). El caso real es
+      // una nota editada a mano en el editor.
+      fs.writeFileSync(
+        path.join(root, 'conocimiento', 'con-guiones.md'),
+        '---\ntitle: Con guiones\ncategory: conocimiento\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\n# Con guiones\n\nCuerpo.\n\n#nano-banana #tipo_referencia\n',
+      );
+      await kb.llamar('write_note', { title: 'Toque guiones', content: 'x', category: 'conocimiento' });
       const { texto } = await kb.llamar('audit_tags');
       assert.match(texto, /#nano-banana → #nano_banana/);
     });
@@ -444,6 +451,53 @@ describe('BovedIA', () => {
       assert.doesNotMatch(texto, /#proyecto/);
       kb2.cerrar();
       fs.rmSync(otra, { recursive: true, force: true });
+    });
+  });
+
+  describe('higiene automática al escribir', () => {
+    test('normaliza la forma de las etiquetas sin que nadie lo pida', async () => {
+      await kb.llamar('write_note', {
+        title: 'Etiquetas sucias',
+        content: 'Cuerpo.\n\n#Nano-Banana #DISEÑO #tipo_referencia',
+        category: 'conocimiento',
+      });
+      const { texto } = await kb.llamar('read_note', { name: 'etiquetas-sucias' });
+      assert.match(texto, /#nano_banana #diseno #tipo_referencia/);
+    });
+
+    test('devuelve la línea de etiquetas al final si queda contenido detrás', async () => {
+      await kb.llamar('write_note', {
+        title: 'Etiquetas a media nota',
+        content: 'Primera parte.\n\n#tipo_referencia #smc\n\n## Ver también\n\n- [[la-piramide]]',
+        category: 'conocimiento',
+      });
+      const { texto } = await kb.llamar('read_note', { name: 'etiquetas-a-media-nota' });
+      const cuerpo = texto.split('**Backlinks')[0].replace(/\s*-{3,}\s*$/, '').trimEnd();
+      assert.ok(cuerpo.endsWith('#tipo_referencia #smc'), `terminaba en: ${cuerpo.slice(-60)}`);
+      assert.match(cuerpo, /## Ver también/);
+    });
+
+    test('append_to_note deja la línea de etiquetas al fondo', async () => {
+      await kb.llamar('append_to_note', { name: 'etiquetas-a-media-nota', content: '## Sección nueva\n\nTexto añadido.' });
+      const { texto } = await kb.llamar('read_note', { name: 'etiquetas-a-media-nota' });
+      const cuerpo = texto.split('**Backlinks')[0].replace(/\s*-{3,}\s*$/, '').trimEnd();
+      assert.ok(cuerpo.endsWith('#tipo_referencia #smc'));
+      assert.match(cuerpo, /Texto añadido/);
+    });
+  });
+
+  describe('vault_health', () => {
+    test('da el parte con lo que hay que corregir y con qué herramienta', async () => {
+      const { texto } = await kb.llamar('vault_health');
+      assert.match(texto, /Bóveda/);
+      assert.match(texto, /wikilinks rotos/);
+      assert.match(texto, /prune_tags|más de 6 etiquetas/);
+    });
+
+    test('detecta una nota sin etiquetar', async () => {
+      await kb.llamar('write_note', { title: 'Nota pelada', content: 'Sin etiquetas de ningún tipo.', category: 'conocimiento' });
+      const { texto } = await kb.llamar('vault_health', { detail: true });
+      assert.match(texto, /nota-pelada/);
     });
   });
 

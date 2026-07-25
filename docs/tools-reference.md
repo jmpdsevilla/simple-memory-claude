@@ -1,6 +1,6 @@
-# Referencia de herramientas — Las 34 herramientas MCP
+# Referencia de herramientas — Las 35 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.5.3).
+Referencia completa de todas las herramientas de BovedIA (v2.6.0).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -8,7 +8,7 @@ Las herramientas se agrupan en seis bloques:
 3. **Mantenimiento de wikilinks y tags** (6) — operaciones sobre enlaces y tags de toda la bóveda
 4. **Lecturas baratas y mantenimiento** (7) — lecturas parciales y limpieza
 5. **Autoría** (2) — solo se exponen con `KB_ENABLE_ANNOTATIONS=1`
-6. **Rutina de la bóveda** (5) — programadas, secciones, auditoría, migración y poda de etiquetas
+6. **Rutina de la bóveda** (6) — salud, programadas, secciones, auditoría, migración y poda de etiquetas
 
 Con `KB_TOOLS=core` el servidor expone solo las 15 de uso diario, para clientes con poca ventana de contexto. Por defecto se exponen todas.
 
@@ -332,6 +332,15 @@ Informe de salud de las etiquetas de la bóveda: hashtags con guión medio, vari
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `fix_dashes` | boolean | no | Corregir los hashtags con guión a `snake_case`. Por defecto false (solo informa) |
+
+### vault_health
+
+Parte de salud de toda la bóveda en una sola llamada: wikilinks rotos, notas sin etiquetar o con demasiadas, etiquetas mal formadas, restos de tags en el frontmatter, tipos en uso, huérfanas y notas sin "Ver también". Cada línea indica qué herramienta lo arregla. Pensada para pasarla de vez en cuando y que el desorden no se acumule sin que nadie lo vea.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `max_tags` | number | no | Máximo de etiquetas por nota que se considera correcto. Por defecto 6 |
+| `detail` | boolean | no | Listar las notas afectadas, no solo el recuento |
 
 ### prune_tags
 

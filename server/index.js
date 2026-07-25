@@ -789,6 +789,26 @@ function lastHashtagLine(body) {
   return null;
 }
 
+// Variante tolerante de lastHashtagLine: reconoce una línea de etiquetas
+// aunque estén mal escritas (mayúsculas, acentos, guiones medios). Solo se usa
+// para corregirlas; el resto del motor trabaja con la forma canónica.
+function looseHashtagLine(body) {
+  const lineas = body.replace(/\s+$/, '').split('\n');
+  let vistas = 0;
+  for (let i = lineas.length - 1; i >= 0 && vistas < 4; i--) {
+    const l = lineas[i].trim();
+    if (!l) continue;
+    vistas++;
+    const tokens = l.split(/\s+/);
+    const todosEtiqueta = tokens.every((t) => /^#[\p{L}\p{N}][\p{L}\p{N}_-]*$/u.test(t));
+    const algunaLetra = /\p{L}/u.test(l);
+    if (todosEtiqueta && algunaLetra) {
+      return { index: i, texto: l, tags: tokens.map((t) => t.slice(1)) };
+    }
+  }
+  return null;
+}
+
 // Lleva una etiqueta a la forma canónica de la bóveda: `snake_case`, sin `#`,
 // sin acentos ni ñ, sin mayúsculas. Es la forma que los editores agrupan y la
 // que el extractor de hashtags reconoce entera.
@@ -925,6 +945,48 @@ function loadNote(name) {
   return { filePath, content, frontmatter, body, bodyAuthors };
 }
 
+// ─── Higiene automática de la línea de etiquetas ───────────────────────────
+// La convención de la bóveda es una única línea de hashtags `#snake_case` como
+// última línea del cuerpo. Se degrada sola: un hashtag con guión que el editor
+// no agrupa, la línea que queda a media nota porque después se añadió una
+// sección, una etiqueta con acento o en mayúsculas. Como toda escritura pasa
+// por persistNote, aquí se corrige en el momento y el desorden no llega a
+// entrar. Es conservador: no quita ni añade etiquetas, solo normaliza su forma
+// y las devuelve a su sitio.
+function tidyTagLine(body) {
+  // Para corregir hace falta un detector más tolerante que el estricto: la
+  // línea que hay que arreglar es precisamente la que NO cumple el formato
+  // (`#Nano-Banana #DISEÑO`). Se acepta cualquier línea compuesta solo por
+  // tokens que empiecen por `#`, con al menos una letra entre todos, y se
+  // exige que no haya espacio tras la almohadilla para no confundirla con un
+  // encabezado Markdown.
+  const linea = lastHashtagLine(body) || looseHashtagLine(body);
+  if (!linea) return body;
+
+  const lineas = body.split('\n');
+  const normalizadas = [];
+  for (const t of linea.tags) {
+    const limpia = normalizeTagName(t);
+    if (limpia && !normalizadas.includes(limpia)) normalizadas.push(limpia);
+  }
+  const nueva = normalizadas.map((t) => '#' + t).join(' ');
+
+  // ¿Queda contenido real después de la línea? Entonces hay que bajarla.
+  const hayContenidoDespues = lineas
+    .slice(linea.index + 1)
+    .some((l) => l.trim() && l.trim() !== '---');
+
+  if (!hayContenidoDespues) {
+    if (nueva === linea.texto) return body;
+    lineas[linea.index] = nueva;
+    return lineas.join('\n');
+  }
+
+  lineas.splice(linea.index, 1);
+  const resto = lineas.join('\n').replace(/\s+$/, '');
+  return `${resto}\n\n${nueva}`;
+}
+
 // Persiste una nota a disco. Punto único de escritura para toda escritura del MCP.
 // - Renueva el campo `updated` del frontmatter a hoy, salvo que se pase
 //   `preserveUpdated: true` (caso migración masiva).
@@ -934,6 +996,24 @@ function loadNote(name) {
 // - Si se pasa array vacío, NINGUNA atribución se persiste (todo cuerpo queda sin
 //   atribuir, comportamiento improbable en la práctica).
 function persistNote(filePath, frontmatter, body, bodyAuthors = null, { preserveUpdated = false } = {}) {
+  // Higiene automática de la línea de etiquetas, antes de nada: así ninguna
+  // escritura puede dejar la bóveda peor de como estaba. Si la corrección
+  // cambia el cuerpo, los rangos de autoría se reajustan al nuevo texto (el
+  // cambio es mecánico, así que conserva el autor del fragmento).
+  if (typeof body === 'string') {
+    const ordenado = tidyTagLine(body);
+    if (ordenado !== body) {
+      if (Array.isArray(bodyAuthors) && bodyAuthors.length) {
+        const diff = computeBodyDiff(body, ordenado);
+        const previo = uniqueAuthorOfSegment(bodyAuthors, diff.editStart, diff.oldLength);
+        bodyAuthors = applyEditToAuthors(
+          bodyAuthors, diff.editStart, diff.oldLength, diff.newLength, previo || CLAUDE_AUTHOR,
+        );
+      }
+      body = ordenado;
+    }
+  }
+
   const fm = buildFrontmatter({
     title: frontmatter.title || '',
     category: frontmatter.category || '',
@@ -1030,7 +1110,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.3' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.6.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -1386,6 +1466,17 @@ const ALL_TOOLS = [
           dry_run: { type: 'boolean', description: 'Si true (por defecto), no escribe nada y devuelve el informe de lo que haría. Con false ejecuta la migración real.' },
           category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional). Útil para migrar por partes.' },
           drop: { type: 'array', items: { type: 'string' }, description: 'Etiquetas que NO se rescatan al cuerpo: se descartan al vaciar el frontmatter. Útil para ruido genérico.' },
+        },
+      },
+    },
+    {
+      name: 'vault_health',
+      description: 'Revisar el estado de salud de toda la bóveda en una sola llamada: wikilinks rotos, notas huérfanas, notas sin etiquetar o con demasiadas, etiquetas mal formadas, restos de tags en el frontmatter y notas que incumplen el estándar (sin "Ver también"). Devuelve un parte corto con lo que está mal y qué herramienta lo arregla. Pensada para pasarla de vez en cuando y que el desorden no se acumule sin que nadie lo vea.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          max_tags: { type: 'number', description: 'Máximo de etiquetas por nota que se considera correcto. Por defecto 6.' },
+          detail: { type: 'boolean', description: 'Si true, lista las notas afectadas de cada problema, no solo el recuento.' },
         },
       },
     },
@@ -2647,6 +2738,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `- Etiquetas bajadas al cuerpo: **${bajadas}**\n` +
             `- Fecha de modificación y autoría: preservadas\n` +
             (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : '- Errores: ninguno'),
+        }],
+      };
+    }
+
+    // ── vault_health ────────────────────────────────────────────────────
+    // El parte de salud de la bóveda. Existe para que el deterioro se vea
+    // pronto y en un sitio, en vez de descubrirse el día que ya hace falta una
+    // limpieza grande. Cada línea dice qué herramienta lo arregla.
+    if (name === 'vault_health') {
+      const maxTags = Number.isFinite(args?.max_tags) && args.max_tags > 0 ? Math.floor(args.max_tags) : 6;
+      const detalle = args?.detail === true;
+      const allNotes = getCachedAllNotes();
+      const RESERVED_LINKS = new Set(['HOME', 'home']);
+
+      const rotos = [];
+      const huerfanas = [];
+      const sinEtiquetas = [];
+      const sobrecargadas = [];
+      const conGuion = [];
+      const conYaml = [];
+      const sinVerTambien = [];
+      const tipos = new Set();
+
+      const { backlinks } = getMaps();
+      for (const note of allNotes) {
+        const malos = note.wikilinks.filter((l) => !RESERVED_LINKS.has(l) && !noteExists(l));
+        if (malos.length) rotos.push(`${note.name} → ${[...new Set(malos)].join(', ')}`);
+
+        const tieneSalientes = note.wikilinks.length > 0;
+        const tieneEntrantes = (backlinks.get(note.name) || new Set()).size > 0;
+        if (!tieneSalientes && !tieneEntrantes) huerfanas.push(note.name);
+
+        const linea = lastHashtagLine(note.body || '');
+        if (!linea) sinEtiquetas.push(note.name);
+        else {
+          if (linea.tags.length > maxTags) sobrecargadas.push(`${note.name} (${linea.tags.length})`);
+          for (const t of linea.tags) if (t.startsWith('tipo_')) tipos.add('#' + t);
+        }
+
+        if (extractDashedHashtags(note.body || '').length) conGuion.push(note.name);
+        const yaml = note.frontmatter?.tags;
+        if (Array.isArray(yaml) ? yaml.length : !!yaml) conYaml.push(note.name);
+        if (!findSection(note.body || '', 'Ver también') && !findSection(note.body || '', 'See also')) {
+          sinVerTambien.push(note.name);
+        }
+      }
+
+      const lista = (arr) => (detalle && arr.length ? `\n  ${arr.slice(0, 30).join('\n  ')}${arr.length > 30 ? `\n  … y ${arr.length - 30} más` : ''}` : '');
+      const linea = (etiqueta, arr, arreglo) =>
+        `- ${arr.length === 0 ? 'OK' : `**${arr.length}**`} · ${etiqueta}${arr.length ? ` → ${arreglo}` : ''}${lista(arr)}`;
+
+      const problemas = rotos.length + sinEtiquetas.length + sobrecargadas.length + conGuion.length + conYaml.length;
+      const cabecera = problemas === 0
+        ? `Bóveda sana: ${allNotes.length} notas, nada que corregir.`
+        : `Bóveda: ${allNotes.length} notas · **${problemas} cosa(s) que corregir**.`;
+
+      return {
+        content: [{
+          type: 'text',
+          text: `${cabecera}\n\n` +
+            linea('wikilinks rotos', rotos, '`list_broken_links` para verlos') + '\n' +
+            linea('notas sin etiquetar', sinEtiquetas, 'añadir su línea de hashtags') + '\n' +
+            linea(`notas con más de ${maxTags} etiquetas`, sobrecargadas, '`prune_tags`') + '\n' +
+            linea('hashtags con guión medio', conGuion, '`audit_tags(fix_dashes: true)`') + '\n' +
+            linea('notas con tags en el frontmatter', conYaml, '`migrate_yaml_tags`') + '\n' +
+            `- ${tipos.size} tipo(s) distintos en uso: ${[...tipos].sort().join(' ') || 'ninguno'}\n` +
+            `- ${huerfanas.length} nota(s) huérfanas y ${sinVerTambien.length} sin "Ver también" (informativo: no siempre es un problema)`,
         }],
       };
     }

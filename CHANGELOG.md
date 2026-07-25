@@ -8,6 +8,27 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.6.0] — 2026-07-25
+
+Versión de mantenimiento preventivo: limpiar una bóveda está bien, pero lo que evita repetir la limpieza es que no se pueda volver a ensuciar igual.
+
+### Añadido
+
+**Higiene automática de la línea de etiquetas en cada escritura.** Toda escritura pasa por un único punto, y ahí se corrige ahora lo que se degradaba solo:
+
+- Las etiquetas se normalizan a la forma canónica: `#Nano-Banana` y `#DISEÑO` se guardan como `#nano_banana` y `#diseno`. Los hashtags con guión medio no vuelven a entrar, porque los editores que agrupan por etiqueta no los reconocen.
+- Si se añade contenido después de la línea de etiquetas, la línea vuelve al final del cuerpo, que es su sitio. Antes quedaba enterrada a media nota y dejaba de cumplir su función.
+
+Es conservador: no quita ni añade etiquetas, solo corrige su forma y su posición. La autoría se reajusta al nuevo texto.
+
+**`vault_health`.** El parte de salud de la bóveda en una sola llamada: wikilinks rotos, notas sin etiquetar o con demasiadas, etiquetas mal formadas, restos de tags en el frontmatter, tipos en uso, huérfanas y notas sin "Ver también". Cada línea dice qué herramienta lo arregla. Existe para que el deterioro se vea pronto y en un sitio, en vez de descubrirse el día que ya hace falta una limpieza grande.
+
+### Pruebas
+
+64 casos (5 nuevos: normalización automática, recolocación de la línea, `append_to_note` respetándola, y el parte de salud con y sin detalle).
+
+---
+
 ## [2.5.3] — 2026-07-25
 
 ### Corregido
