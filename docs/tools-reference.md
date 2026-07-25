@@ -1,6 +1,6 @@
-# Referencia de herramientas — Las 33 herramientas MCP
+# Referencia de herramientas — Las 34 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.4.1).
+Referencia completa de todas las herramientas de BovedIA (v2.5.0).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -8,7 +8,7 @@ Las herramientas se agrupan en seis bloques:
 3. **Mantenimiento de wikilinks y tags** (6) — operaciones sobre enlaces y tags de toda la bóveda
 4. **Lecturas baratas y mantenimiento** (7) — lecturas parciales y limpieza
 5. **Autoría** (2) — solo se exponen con `KB_ENABLE_ANNOTATIONS=1`
-6. **Rutina de la bóveda** (4) — programadas, secciones, auditoría y migración de etiquetas
+6. **Rutina de la bóveda** (5) — programadas, secciones, auditoría, migración y poda de etiquetas
 
 Con `KB_TOOLS=core` el servidor expone solo las 15 de uso diario, para clientes con poca ventana de contexto. Por defecto se exponen todas.
 
@@ -332,6 +332,18 @@ Informe de salud de las etiquetas de la bóveda: hashtags con guión medio, vari
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `fix_dashes` | boolean | no | Corregir los hashtags con guión a `snake_case`. Por defecto false (solo informa) |
+
+### prune_tags
+
+Poda la taxonomía: fusiona variantes que significan lo mismo y recorta las notas que llevan más etiquetas de la cuenta. Conserva el `#tipo_*`, lo indicado en `keep` y las etiquetas más usadas; retira primero las de uso único, que no agrupan nada (una categoría con una sola nota no es una categoría) y cuyo contenido sigue estando en el texto de la nota. Preserva la fecha de modificación y la autoría, y no toca las notas que ya cumplen.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `dry_run` | boolean | no | Simular sin escribir. Por defecto true |
+| `max` | number | no | Máximo de etiquetas por nota. Por defecto 6 |
+| `merge` | object | no | Fusiones `{etiqueta_vieja: etiqueta_nueva}`, sin almohadilla |
+| `keep` | array | no | Etiquetas que nunca se retiran |
+| `category` | string | no | Acotar a una categoría y sus subcarpetas |
 
 ### migrate_yaml_tags
 

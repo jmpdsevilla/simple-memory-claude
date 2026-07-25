@@ -771,6 +771,24 @@ function extractDashedHashtags(body) {
   return [...new Set(matches.map((m) => m[1]))];
 }
 
+// Localiza la línea de hashtags del final del cuerpo, que es donde vive la
+// clasificación de la nota. Devuelve { index, texto, tags } o null si no la hay.
+// Se busca hacia atrás entre las últimas líneas con contenido: si lo primero
+// que aparece no es una línea de etiquetas, es que la nota no las tiene.
+function lastHashtagLine(body) {
+  const lineas = body.replace(/\s+$/, '').split('\n');
+  let vistas = 0;
+  for (let i = lineas.length - 1; i >= 0 && vistas < 4; i--) {
+    const l = lineas[i].trim();
+    if (!l) continue;
+    vistas++;
+    if (/^(#[a-z][a-z0-9_]*)(\s+#[a-z][a-z0-9_]*)*$/.test(l)) {
+      return { index: i, texto: l, tags: l.split(/\s+/).map((t) => t.slice(1)) };
+    }
+  }
+  return null;
+}
+
 // Lleva una etiqueta a la forma canónica de la bóveda: `snake_case`, sin `#`,
 // sin acentos ni ñ, sin mayúsculas. Es la forma que los editores agrupan y la
 // que el extractor de hashtags reconoce entera.
@@ -1012,7 +1030,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.4.1' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -1368,6 +1386,20 @@ const ALL_TOOLS = [
           dry_run: { type: 'boolean', description: 'Si true (por defecto), no escribe nada y devuelve el informe de lo que haría. Con false ejecuta la migración real.' },
           category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional). Útil para migrar por partes.' },
           drop: { type: 'array', items: { type: 'string' }, description: 'Etiquetas que NO se rescatan al cuerpo: se descartan al vaciar el frontmatter. Útil para ruido genérico.' },
+        },
+      },
+    },
+    {
+      name: 'prune_tags',
+      description: 'Podar, limpiar o simplificar las etiquetas de la bóveda: fusionar variantes que significan lo mismo (#tipo_filosofia → #tipo_doctrina) y recortar las notas que llevan más etiquetas de la cuenta, quedándose con las que de verdad agrupan. Conserva siempre el `#tipo_*`, lo que se indique en `keep` y las etiquetas más usadas; las que sobran se retiran empezando por las de uso único, que no agrupan nada. Preserva la fecha de modificación y la autoría. Por defecto corre en dry_run.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          dry_run: { type: 'boolean', description: 'Si true (por defecto), no escribe nada y devuelve el informe de lo que haría.' },
+          max: { type: 'number', description: 'Máximo de etiquetas por nota. Por defecto 6.' },
+          merge: { type: 'object', description: 'Fusiones a aplicar, como pares {etiqueta_vieja: etiqueta_nueva} sin la almohadilla. Por ejemplo {"tipo_runbook": "tipo_proceso"}.' },
+          keep: { type: 'array', items: { type: 'string' }, description: 'Etiquetas que nunca se retiran (autor, dominio, estado…), sin la almohadilla.' },
+          category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional).' },
         },
       },
     },
@@ -2613,6 +2645,139 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `- Etiquetas bajadas al cuerpo: **${bajadas}**\n` +
             `- Fecha de modificación y autoría: preservadas\n` +
             (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : '- Errores: ninguno'),
+        }],
+      };
+    }
+
+    // ── prune_tags ──────────────────────────────────────────────────────
+    // Una taxonomía crece sola: variantes del mismo concepto y notas que van
+    // acumulando etiquetas hasta que ninguna dice nada. Esta operación hace dos
+    // cosas medibles: fusiona las variantes que se le indiquen y recorta las
+    // notas por encima del máximo, retirando primero las etiquetas de uso único
+    // —que no agrupan nada, porque una categoría con una sola nota no es una
+    // categoría—. Lo que la etiqueta decía sigue estando en el texto de la nota,
+    // así que la búsqueda no pierde nada.
+    if (name === 'prune_tags') {
+      const dryRun = args?.dry_run !== false;
+      const max = Number.isFinite(args?.max) && args.max > 0 ? Math.floor(args.max) : 6;
+      const merge = {};
+      for (const [k, v] of Object.entries(args?.merge || {})) {
+        merge[normalizeTagName(k)] = normalizeTagName(v);
+      }
+      const keep = new Set((args?.keep || []).map((t) => normalizeTagName(t)));
+      const allNotes = getCachedAllNotes();
+      const scoped = allNotes.filter((n) => categoryMatches(n.category, args?.category));
+
+      // La frecuencia se calcula DESPUÉS de fusionar: es la que decide qué
+      // etiqueta temática sobrevive en las notas que hay que recortar.
+      const frecuencia = new Map();
+      const etiquetasDe = new Map();
+      for (const note of scoped) {
+        const linea = lastHashtagLine(note.body || '');
+        if (!linea) continue;
+        const tags = [];
+        for (const t of linea.tags) {
+          const u = merge[t] || t;
+          if (!tags.includes(u)) tags.push(u);
+        }
+        etiquetasDe.set(note.name, { linea, tags });
+        for (const t of tags) frecuencia.set(t, (frecuencia.get(t) || 0) + 1);
+      }
+
+      const plan = [];
+      for (const note of scoped) {
+        const info = etiquetasDe.get(note.name);
+        if (!info) continue;
+        const { linea, tags } = info;
+
+        const tipo = tags.filter((t) => t.startsWith('tipo_')).slice(0, 1);
+        const fijas = tags.filter((t) => keep.has(t) && !tipo.includes(t));
+        const temas = tags.filter((t) => !tipo.includes(t) && !fijas.includes(t));
+
+        const porFrecuencia = [...temas].sort(
+          (a, b) => (frecuencia.get(b) - frecuencia.get(a)) || temas.indexOf(a) - temas.indexOf(b),
+        );
+        const hueco = Math.max(0, max - tipo.length - fijas.length);
+        const conservadas = porFrecuencia.slice(0, hueco);
+        const retiradas = porFrecuencia.slice(hueco);
+
+        // Se reconstruye respetando el orden en que estaban, para no generar
+        // cambios cosméticos: si el conjunto final es el mismo, no se toca.
+        const finales = tags.filter((t) => tipo.includes(t) || fijas.includes(t) || conservadas.includes(t));
+        const originales = linea.tags;
+        const cambia = finales.length !== originales.length || finales.some((t, i) => t !== originales[i]);
+        if (!cambia) continue;
+
+        plan.push({
+          note,
+          vieja: linea.texto,
+          nueva: finales.map((t) => '#' + t).join(' '),
+          retiradas: retiradas.map((t) => '#' + t),
+          fusionadas: originales.filter((t) => merge[t]).map((t) => `#${t}→#${merge[t]}`),
+        });
+      }
+
+      if (!plan.length) {
+        return { content: [{ type: 'text', text: 'Las etiquetas ya cumplen el criterio. No hay nada que podar.' }] };
+      }
+
+      const conRecorte = plan.filter((p) => p.retiradas.length).length;
+      const soloFusion = plan.length - conRecorte;
+      const totalRetiradas = plan.reduce((s, p) => s + p.retiradas.length, 0);
+
+      if (dryRun) {
+        const muestra = plan.slice(0, 15).map((p) =>
+          `- **${p.note.name}**\n  antes: ${p.vieja}\n  ahora: ${p.nueva}` +
+          (p.retiradas.length ? `\n  fuera: ${p.retiradas.join(' ')}` : ''));
+        return {
+          content: [{
+            type: 'text',
+            text: `SIMULACIÓN (no se ha escrito nada).\n\n` +
+              `- Notas a tocar: **${plan.length}** de ${scoped.length}\n` +
+              `- Solo fusión de variantes: **${soloFusion}**\n` +
+              `- Con recorte de etiquetas: **${conRecorte}**\n` +
+              `- Etiquetas retiradas en total: **${totalRetiradas}** (máximo por nota: ${max})\n\n` +
+              `Muestra:\n${muestra.join('\n')}\n` +
+              (plan.length > 15 ? `\n… y ${plan.length - 15} notas más.\n` : '') +
+              `\nPara ejecutarlo: \`prune_tags(dry_run: false, …)\` con los mismos parámetros.`,
+          }],
+        };
+      }
+
+      let tocadas = 0;
+      const errores = [];
+      for (const p of plan) {
+        try {
+          const note = loadNote(p.note.name);
+          if (!note) { errores.push(`${p.note.name}: no encontrada`); continue; }
+          const lineaActual = lastHashtagLine(note.body);
+          if (!lineaActual) { errores.push(`${p.note.name}: sin línea de etiquetas`); continue; }
+          const lineas = note.body.split('\n');
+          lineas[lineaActual.index] = p.nueva;
+          const newBody = lineas.join('\n');
+          if (newBody === note.body) continue;
+
+          const diff = computeBodyDiff(note.body, newBody);
+          const original = uniqueAuthorOfSegment(note.bodyAuthors, diff.editStart, diff.oldLength);
+          const authors = applyEditToAuthors(
+            note.bodyAuthors, diff.editStart, diff.oldLength, diff.newLength, original || CLAUDE_AUTHOR,
+          );
+          persistNote(note.filePath, note.frontmatter, newBody, authors, { preserveUpdated: true });
+          tocadas++;
+        } catch (e) {
+          errores.push(`${p.note.name}: ${e.message}`);
+        }
+      }
+      invalidateCache();
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Poda completada.\n\n` +
+            `- Notas actualizadas: **${tocadas}**\n` +
+            `- Etiquetas retiradas: **${totalRetiradas}**\n` +
+            `- Fecha de modificación y autoría: preservadas\n` +
+            (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : `- Errores: ninguno`),
         }],
       };
     }

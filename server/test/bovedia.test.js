@@ -423,6 +423,88 @@ describe('BovedIA', () => {
     });
   });
 
+  describe('prune_tags', () => {
+    let raiz;
+    let pr;
+
+    before(async () => {
+      raiz = bovedaTemporal('poda');
+      pr = await new Cliente(raiz, { KB_ENABLE_ANNOTATIONS: '1' }).iniciar();
+      // #comun sale en las tres notas; #raro1/#raro2/#raro3 solo en una cada una.
+      await pr.llamar('write_note', {
+        title: 'Sobrecargada',
+        content: 'Cuerpo.\n\n#tipo_filosofia #smc #comun #otro_comun #raro1 #raro2 #raro3 #autor_claude',
+        category: 'conocimiento',
+      });
+      await pr.llamar('write_note', {
+        title: 'Justa', content: 'Cuerpo.\n\n#tipo_referencia #smc #comun #otro_comun', category: 'conocimiento',
+      });
+      await pr.llamar('write_note', {
+        title: 'Con variante', content: 'Cuerpo.\n\n#tipo_runbook #smc #comun #otro_comun', category: 'conocimiento',
+      });
+    });
+
+    after(() => {
+      pr.cerrar();
+      fs.rmSync(raiz, { recursive: true, force: true });
+    });
+
+    const OPCIONES = {
+      merge: { tipo_filosofia: 'tipo_doctrina', tipo_runbook: 'tipo_proceso' },
+      keep: ['smc', 'autor_claude'],
+      max: 6,
+    };
+
+    test('la simulación no escribe', async () => {
+      const { texto } = await pr.llamar('prune_tags', OPCIONES);
+      assert.match(texto, /SIMULACIÓN/);
+      const nota = await pr.llamar('read_note', { name: 'sobrecargada' });
+      assert.match(nota.texto, /#raro3/);
+    });
+
+    test('fusiona las variantes indicadas', async () => {
+      await pr.llamar('prune_tags', { ...OPCIONES, dry_run: false });
+      const doctrina = await pr.llamar('read_note', { name: 'sobrecargada' });
+      assert.match(doctrina.texto, /#tipo_doctrina/);
+      assert.doesNotMatch(doctrina.texto, /#tipo_filosofia/);
+      const proceso = await pr.llamar('read_note', { name: 'con-variante' });
+      assert.match(proceso.texto, /#tipo_proceso/);
+    });
+
+    test('recorta al máximo conservando tipo, keep y las que más agrupan', async () => {
+      const { texto } = await pr.llamar('read_note', { name: 'sobrecargada' });
+      const etiquetas = texto.match(/#[a-z][a-z0-9_]*/g).filter((t) => t !== '#Backlinks');
+      assert.ok(etiquetas.length <= 6, `quedaron ${etiquetas.length}`);
+      assert.match(texto, /#tipo_doctrina/);   // el tipo se conserva
+      assert.match(texto, /#smc/);             // keep
+      assert.match(texto, /#autor_claude/);    // keep
+      assert.match(texto, /#comun/);           // la que agrupa en 3 notas
+      assert.doesNotMatch(texto, /#raro3/);    // uso único: fuera
+    });
+
+    test('no toca las notas que ya cumplen', async () => {
+      const antes = await pr.llamar('read_frontmatter', { name: 'justa' });
+      await pr.llamar('prune_tags', { ...OPCIONES, dry_run: false });
+      const despues = await pr.llamar('read_frontmatter', { name: 'justa' });
+      assert.equal(antes.texto, despues.texto);
+    });
+
+    test('preserva la fecha de modificación', async () => {
+      const ruta = path.join(raiz, 'conocimiento', 'vieja.md');
+      fs.writeFileSync(ruta, '---\ntitle: Vieja\ncategory: conocimiento\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\n# Vieja\n\nCuerpo.\n\n#tipo_runbook #smc #comun #raro9 #raro8 #raro7 #raro6 #autor_claude\n');
+      await pr.llamar('write_note', { title: 'Toque poda', content: 'x', category: 'conocimiento' });
+      await pr.llamar('prune_tags', { ...OPCIONES, dry_run: false });
+      const contenido = fs.readFileSync(ruta, 'utf8');
+      assert.match(contenido, /updated: 2026-01-01/);
+      assert.match(contenido, /#tipo_proceso/);
+    });
+
+    test('es idempotente', async () => {
+      const { texto } = await pr.llamar('prune_tags', OPCIONES);
+      assert.match(texto, /No hay nada que podar/);
+    });
+  });
+
   describe('get_index', () => {
     test('por defecto devuelve solo el árbol de categorías', async () => {
       const { texto } = await kb.llamar('get_index');

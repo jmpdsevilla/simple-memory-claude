@@ -8,6 +8,23 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.5.0] — 2026-07-25
+
+### Añadido
+
+**`prune_tags`.** Poda de la taxonomía, la otra mitad del trabajo que empezó `migrate_yaml_tags`: cuando todas las etiquetas viven en el mismo sitio se ve lo que sobra. Hace dos cosas medibles:
+
+- **Fusiona variantes** del mismo concepto, según el mapa `{vieja: nueva}` que se le pase (`#tipo_runbook` → `#tipo_proceso`).
+- **Recorta las notas por encima del máximo** (6 por defecto), retirando primero las etiquetas de uso único: una categoría con una sola nota no agrupa nada, y lo que esa etiqueta decía sigue estando en el texto, así que la búsqueda no pierde nada. Conserva siempre el `#tipo_*` y lo que se indique en `keep` (autor, dominio, estado).
+
+Preserva la fecha de modificación y la autoría, no toca las notas que ya cumplen —ni siquiera para reordenar— y es idempotente. `dry_run` por defecto.
+
+### Pruebas
+
+56 casos (6 nuevos: simulación, fusión de variantes, recorte por frecuencia, respeto a las notas correctas, preservación de fechas e idempotencia).
+
+---
+
 ## [2.4.1] — 2026-07-25
 
 ### Cambiado
