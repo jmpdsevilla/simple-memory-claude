@@ -8,6 +8,28 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.7.0] — 2026-07-25
+
+Red de seguridad. Hasta ahora BovedIA tenía muchas formas de escribir y ninguna de deshacer: una operación masiva que saliera mal solo se podía revertir si alguien se había acordado de hacer una copia a mano.
+
+### Añadido
+
+**Copias automáticas antes de cada operación masiva.** `migrate_yaml_tags` y `prune_tags` guardan una instantánea completa de la bóveda antes de tocar nada, y lo dicen en su respuesta. Las copias viven **fuera de la bóveda** (`KB_BACKUP_ROOT`, por defecto `~/.bovedia`): ni la ensucian ni se sincronizan con ella. Se conservan las 10 últimas (`KB_SNAPSHOT_KEEP`).
+
+**`create_snapshot`, `list_snapshots` y `restore_snapshot`.** Copia a demanda, listado con fecha y motivo, y vuelta atrás. La restauración simula por defecto, guarda copia del estado actual antes de aplicarse —así que también se puede deshacer— y respeta las notas creadas después de la copia.
+
+**Papelera en `delete_note`.** Borrar era la única operación sin retorno; ahora la nota va a una papelera fuera de la bóveda y se puede recuperar. Con `permanent: true` se borra de verdad.
+
+### Notas
+
+Se evaluó también un guardia de escritura concurrente (abortar si la nota cambió en disco entre la lectura y la escritura) y **se descartó tras probarlo**: solo cubría milisegundos dentro de una misma llamada, no el caso real de una nota editada en el editor entre dos operaciones, así que daba una sensación de protección que no correspondía con lo que hacía. Ese caso ya lo cubre, cuando las anotaciones están activadas, el bloqueo de `write_note` ante autoría humana.
+
+### Pruebas
+
+69 casos (5 nuevos: papelera, borrado permanente, copia automática antes de una operación masiva, restauración completa y bloqueo por autoría humana).
+
+---
+
 ## [2.6.0] — 2026-07-25
 
 Versión de mantenimiento preventivo: limpiar una bóveda está bien, pero lo que evita repetir la limpieza es que no se pueda volver a ensuciar igual.

@@ -14,12 +14,27 @@ import { fileURLToPath } from 'node:url';
 const SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.js');
 
 // ─── Cliente MCP mínimo por stdio ───────────────────────────────────────────
+// Todos los clientes lanzados, para cerrarlos pase lo que pase al terminar:
+// si un test falla antes de su limpieza, el proceso hijo quedaría vivo y la
+// suite no terminaría nunca.
+const clientesVivos = [];
+process.on('exit', () => { for (const c of clientesVivos) { try { c.kill(); } catch {} } });
+
 class Cliente {
   constructor(root, env = {}) {
     this.proc = spawn('node', [SERVER], {
-      env: { ...process.env, KB_MEMORY_ROOT: root, ...env },
+      env: {
+        ...process.env,
+        KB_MEMORY_ROOT: root,
+        // Nunca dejar que las pruebas escriban copias en la carpeta real del
+        // usuario: por defecto van junto a la bóveda temporal de cada prueba.
+        KB_BACKUP_ROOT: path.join(root, '.copias-de-prueba'),
+        ...env,
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    this.proc.unref();
+    clientesVivos.push(this.proc);
     this.pendientes = new Map();
     this.id = 0;
     this.buffer = '';
@@ -483,6 +498,104 @@ describe('BovedIA', () => {
       const cuerpo = texto.split('**Backlinks')[0].replace(/\s*-{3,}\s*$/, '').trimEnd();
       assert.ok(cuerpo.endsWith('#tipo_referencia #smc'));
       assert.match(cuerpo, /Texto añadido/);
+    });
+  });
+
+  describe('red de seguridad', () => {
+    // Cada prueba usa su propia bóveda y su propia carpeta de copias, para no
+    // mezclarse con las del resto ni con las de la instalación real.
+    const porLimpiar = [];
+    after(() => {
+      for (const { cli, raiz, copias } of porLimpiar) {
+        try { cli.cerrar(); } catch {}
+        fs.rmSync(raiz, { recursive: true, force: true });
+        fs.rmSync(copias, { recursive: true, force: true });
+      }
+    });
+
+    async function conRed(nombre) {
+      const raiz = bovedaTemporal(nombre);
+      const copias = bovedaTemporal(`${nombre}-copias`);
+      const cli = await new Cliente(raiz, { KB_BACKUP_ROOT: copias, KB_ENABLE_ANNOTATIONS: '1' }).iniciar();
+      // La limpieza se registra ya: si el test falla a mitad, igual se limpia.
+      porLimpiar.push({ cli, raiz, copias });
+      return { raiz, copias, cli, limpiar: () => {} };
+    }
+
+    test('borrar manda la nota a la papelera, no al vacío', async () => {
+      const { raiz, copias, cli, limpiar } = await conRed('papelera');
+      await cli.llamar('write_note', { title: 'Prescindible', content: 'Contenido que no quiero perder del todo.', category: 'conocimiento' });
+      const { texto } = await cli.llamar('delete_note', { name: 'prescindible' });
+      assert.match(texto, /papelera/i);
+      assert.equal(fs.existsSync(path.join(raiz, 'conocimiento', 'prescindible.md')), false);
+      const enPapelera = fs.readdirSync(path.join(copias, 'papelera'));
+      const recuperada = fs.readFileSync(path.join(copias, 'papelera', enPapelera[0], 'prescindible.md'), 'utf8');
+      assert.match(recuperada, /no quiero perder/);
+      limpiar();
+    });
+
+    test('con permanent:true no pasa por la papelera', async () => {
+      const { copias, cli, limpiar } = await conRed('permanente');
+      await cli.llamar('write_note', { title: 'Fuera', content: 'x', category: 'conocimiento' });
+      const { texto } = await cli.llamar('delete_note', { name: 'fuera', permanent: true });
+      assert.match(texto, /definitivamente/);
+      assert.equal(fs.existsSync(path.join(copias, 'papelera')), false);
+      limpiar();
+    });
+
+    test('una operación masiva guarda copia antes de tocar nada', async () => {
+      const { cli, limpiar } = await conRed('copia-masiva');
+      await cli.llamar('write_note', { title: 'Recargada', content: 'Cuerpo.\n\n#tipo_referencia #smc #a #b #c #d #e #f', category: 'conocimiento' });
+      const { texto } = await cli.llamar('prune_tags', { dry_run: false, max: 4, keep: ['smc'] });
+      assert.match(texto, /Copia de seguridad previa/);
+      const copias = await cli.llamar('list_snapshots');
+      assert.match(copias.texto, /antes-de-podar-etiquetas/);
+      limpiar();
+    });
+
+    test('restaurar devuelve las notas a su estado anterior', async () => {
+      const { cli, limpiar } = await conRed('restaurar');
+      await cli.llamar('write_note', { title: 'Importante', content: 'VERSION ORIGINAL', category: 'conocimiento' });
+      const copia = await cli.llamar('create_snapshot', { reason: 'antes del destrozo' });
+      const nombre = copia.texto.match(/\*\*(.+?)\*\*/)[1];
+
+      await cli.llamar('write_note', { title: 'Importante', content: 'VERSION DESTROZADA', category: 'conocimiento' });
+      await cli.llamar('write_note', { title: 'Posterior', content: 'Creada después de la copia.', category: 'conocimiento' });
+
+      const simulacion = await cli.llamar('restore_snapshot', { name: nombre });
+      assert.match(simulacion.texto, /SIMULACIÓN/);
+      const sigueDestrozada = await cli.llamar('read_note', { name: 'importante' });
+      assert.match(sigueDestrozada.texto, /DESTROZADA/);
+
+      await cli.llamar('restore_snapshot', { name: nombre, dry_run: false });
+      const recuperada = await cli.llamar('read_note', { name: 'importante' });
+      assert.match(recuperada.texto, /VERSION ORIGINAL/);
+      // Lo creado después de la copia no se pierde al restaurar.
+      const posterior = await cli.llamar('read_note', { name: 'posterior' });
+      assert.match(posterior.texto, /Creada después/);
+      limpiar();
+    });
+
+    test('una edición humana bloquea la sobrescritura completa de la nota', async () => {
+      // Esta es la protección real frente a "el editor y la IA tocando lo
+      // mismo": con las anotaciones activadas, si la nota tiene texto escrito
+      // por una persona, write_note (que reescribe el cuerpo entero) se niega.
+      const { raiz, cli, limpiar } = await conRed('autoria');
+      await cli.llamar('write_note', { title: 'Compartida', content: 'Texto de la IA.', category: 'conocimiento' });
+
+      // Se simula la edición desde el editor: un rango atribuido a una persona.
+      const ruta = path.join(raiz, 'conocimiento', 'compartida.md');
+      const actual = fs.readFileSync(ruta, 'utf8');
+      // Se cambia solo el autor, conservando los rangos (que son relativos al
+      // archivo: inventarlos los dejaría dentro del frontmatter y no contarían).
+      fs.writeFileSync(ruta, actual.replace('&Claude <noreply@anthropic.com>', '@José <jose@ejemplo.com>'));
+
+      const { texto, error } = await cli.llamar('write_note', {
+        title: 'Compartida', content: 'La IA lo reescribe entero.', category: 'conocimiento',
+      });
+      assert.equal(error, true);
+      assert.match(texto, /autoría humana/i);
+      limpiar();
     });
   });
 

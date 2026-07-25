@@ -1,6 +1,6 @@
-# Referencia de herramientas — Las 35 herramientas MCP
+# Referencia de herramientas — Las 38 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.6.0).
+Referencia completa de todas las herramientas de BovedIA (v2.7.0).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -9,6 +9,7 @@ Las herramientas se agrupan en seis bloques:
 4. **Lecturas baratas y mantenimiento** (7) — lecturas parciales y limpieza
 5. **Autoría** (2) — solo se exponen con `KB_ENABLE_ANNOTATIONS=1`
 6. **Rutina de la bóveda** (6) — salud, programadas, secciones, auditoría, migración y poda de etiquetas
+7. **Red de seguridad** (3) — copias de la bóveda y vuelta atrás
 
 Con `KB_TOOLS=core` el servidor expone solo las 15 de uso diario, para clientes con poca ventana de contexto. Por defecto se exponen todas.
 
@@ -68,11 +69,12 @@ Devuelve el mapa de categorías con el número de notas de cada una. El listado 
 
 ### delete_note
 
-Elimina una nota de forma permanente. Avisa de los backlinks que la referencian.
+Manda una nota a la papelera (fuera de la bóveda), de donde se puede recuperar. Avisa de los backlinks que la referencian.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `name` | string | sí | Slug de la nota |
+| `permanent` | boolean | no | Borrar definitivamente, sin pasar por la papelera. Por defecto false |
 
 ### create_category
 
@@ -406,3 +408,30 @@ La convención de la bóveda es poner los hashtags `#snake_case` al final del cu
 ```
 
 `list_tags` encuentra todos los hashtags de este formato en cualquier parte del cuerpo. `append_to_note` detecta la línea de hashtags al final e inserta el contenido nuevo **antes** de ella para que la línea se quede al fondo.
+
+---
+
+## Bloque 7 — Red de seguridad
+
+Las operaciones masivas guardan **solas** una copia completa de la bóveda antes de tocar nada. Las copias viven fuera de la bóveda (`KB_BACKUP_ROOT`, por defecto `~/.bovedia`), no se sincronizan con ella y se conservan las 10 últimas (`KB_SNAPSHOT_KEEP`).
+
+### create_snapshot
+
+Crea ahora una copia completa, antes de hacer algo arriesgado.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `reason` | string | no | Motivo, para reconocerla después |
+
+### list_snapshots
+
+Lista las copias disponibles con su fecha, motivo y número de notas. Sin parámetros.
+
+### restore_snapshot
+
+Devuelve las notas al estado de una copia. Antes guarda otra copia del estado actual, así que la restauración también se puede deshacer. Las notas creadas después de la copia no se tocan.
+
+| Parámetro | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `name` | string | sí | Nombre de la copia (de `list_snapshots`) |
+| `dry_run` | boolean | no | Simular. Por defecto true |

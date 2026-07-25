@@ -387,6 +387,87 @@ function stripCode(content) {
     .replace(/`[^`\n]+`/g, '');
 }
 
+// ─── Red de seguridad: instantáneas y papelera ─────────────────────────────
+// Las operaciones masivas (migrar etiquetas, podar, mover carpetas enteras)
+// tocan cientos de notas de una vez. Antes de eso se guarda una copia completa,
+// para que deshacer sea posible sin depender de que alguien se acordara de
+// hacer un backup a mano. Vive FUERA de la bóveda: ni la ensucia ni se sincroniza
+// con ella. Se configura con KB_BACKUP_ROOT; por defecto, ~/.bovedia.
+const BACKUP_ROOT = process.env.KB_BACKUP_ROOT
+  ? path.resolve(process.env.KB_BACKUP_ROOT.replace(/^~/, os.homedir()))
+  : path.join(os.homedir(), '.bovedia');
+const SNAPSHOT_DIR = path.join(BACKUP_ROOT, 'instantaneas');
+const TRASH_DIR = path.join(BACKUP_ROOT, 'papelera');
+// Cuántas instantáneas se conservan. Las más antiguas se van borrando solas.
+const SNAPSHOT_KEEP = Number.parseInt(process.env.KB_SNAPSHOT_KEEP || '10', 10) || 10;
+
+function marcaDeTiempo() {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+// Copia recursiva de los .md de la bóveda a un destino.
+function copiarNotas(origen, destino) {
+  let copiados = 0;
+  for (const e of fs.readdirSync(origen, { withFileTypes: true })) {
+    if (e.name.startsWith('.')) continue;
+    const src = path.join(origen, e.name);
+    const dst = path.join(destino, e.name);
+    if (e.isDirectory()) {
+      const n = copiarNotas(src, dst);
+      copiados += n;
+    } else if (e.isFile() && e.name.endsWith('.md')) {
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.copyFileSync(src, dst);
+      copiados++;
+    }
+  }
+  return copiados;
+}
+
+// Guarda una instantánea completa de la bóveda. Devuelve { nombre, ruta, notas }
+// o null si falla (nunca debe impedir la operación principal: es una red, no un
+// requisito).
+function crearInstantanea(motivo) {
+  try {
+    const nombre = `${marcaDeTiempo()}_${slugify(motivo || 'manual') || 'manual'}`;
+    const ruta = path.join(SNAPSHOT_DIR, nombre);
+    fs.mkdirSync(ruta, { recursive: true });
+    const notas = copiarNotas(MEMORY_ROOT, ruta);
+    podarInstantaneas();
+    return { nombre, ruta, notas };
+  } catch {
+    return null;
+  }
+}
+
+function contarMd(dir) {
+  let n = 0;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) n += contarMd(path.join(dir, e.name));
+    else if (e.name.endsWith('.md')) n++;
+  }
+  return n;
+}
+
+function listarInstantaneas() {
+  try {
+    return fs.readdirSync(SNAPSHOT_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+function podarInstantaneas() {
+  const todas = listarInstantaneas();
+  for (const vieja of todas.slice(SNAPSHOT_KEEP)) {
+    try { fs.rmSync(path.join(SNAPSHOT_DIR, vieja), { recursive: true, force: true }); } catch {}
+  }
+}
+
 // ─── Seguridad de rutas ────────────────────────────────────────────────────
 // Toda ruta construida a partir de datos que llegan en los argumentos de una
 // tool (category, new_category, nombres de carpeta) tiene que quedar DENTRO de
@@ -1110,7 +1191,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.6.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.7.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -1182,10 +1263,13 @@ const ALL_TOOLS = [
     },
     {
       name: 'delete_note',
-      description: 'Eliminar, borrar o quitar una nota de la base de conocimiento. Avisa si otras notas la referencian con wikilinks.',
+      description: 'Eliminar, borrar o quitar una nota de la base de conocimiento. La nota va a la papelera (fuera de la bóveda), así que se puede recuperar. Avisa si otras notas la referencian con wikilinks.',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string', description: 'Nombre de la nota sin extensión .md' } },
+        properties: {
+          name: { type: 'string', description: 'Nombre de la nota sin extensión .md' },
+          permanent: { type: 'boolean', description: 'Si true, borra definitivamente sin pasar por la papelera. Por defecto false.' },
+        },
         required: ['name'],
       },
     },
@@ -1467,6 +1551,31 @@ const ALL_TOOLS = [
           category: { type: 'string', description: 'Acotar a una categoría y sus subcarpetas (opcional). Útil para migrar por partes.' },
           drop: { type: 'array', items: { type: 'string' }, description: 'Etiquetas que NO se rescatan al cuerpo: se descartan al vaciar el frontmatter. Útil para ruido genérico.' },
         },
+      },
+    },
+    {
+      name: 'list_snapshots',
+      description: 'Listar las copias de seguridad (instantáneas) disponibles de la bóveda, con su fecha y el motivo por el que se hicieron. Se crean solas antes de cada operación masiva, y también se puede crear una a mano con create_snapshot.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'create_snapshot',
+      description: 'Crear ahora una copia de seguridad completa de la bóveda, antes de hacer algo arriesgado. Se guarda fuera de la bóveda, con fecha y motivo, y se puede volver a ella con restore_snapshot.',
+      inputSchema: {
+        type: 'object',
+        properties: { reason: { type: 'string', description: 'Motivo, para reconocerla luego (ej. "antes de reorganizar clientes")' } },
+      },
+    },
+    {
+      name: 'restore_snapshot',
+      description: 'Restaurar, recuperar o volver a una copia de seguridad anterior de la bóveda: devuelve las notas al estado que tenían en esa instantánea. Antes de tocar nada guarda otra copia del estado actual, así que también se puede deshacer la restauración. Por defecto simula y dice qué cambiaría.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Nombre de la instantánea (el que devuelve list_snapshots)' },
+          dry_run: { type: 'boolean', description: 'Si true (por defecto), solo informa de qué notas cambiarían.' },
+        },
+        required: ['name'],
       },
     },
     {
@@ -1837,10 +1946,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       const allNotes = getAllNotes();
       const backlinks = getBacklinks(args.name, allNotes);
-      fs.unlinkSync(filePath);
+
+      // Borrar es la única operación sin vuelta atrás, así que por defecto la
+      // nota va a la papelera (fuera de la bóveda) en vez de desaparecer. Con
+      // `permanent: true` se borra de verdad.
+      let destino = null;
+      if (args.permanent === true) {
+        fs.unlinkSync(filePath);
+      } else {
+        try {
+          const carpeta = path.join(TRASH_DIR, marcaDeTiempo());
+          fs.mkdirSync(carpeta, { recursive: true });
+          destino = path.join(carpeta, path.basename(filePath));
+          fs.copyFileSync(filePath, destino);
+          fs.unlinkSync(filePath);
+        } catch {
+          fs.unlinkSync(filePath);
+          destino = null;
+        }
+      }
       cleanupEmptyAncestors(path.dirname(filePath));
 
-      let msg = `Nota "${args.name}" eliminada.`;
+      let msg = args.permanent === true
+        ? `Nota "${args.name}" eliminada definitivamente.`
+        : `Nota "${args.name}" eliminada${destino ? ` y guardada en la papelera:\n${destino}` : '.'}`;
       if (backlinks.length) {
         msg += `\n\nAVISO — Las siguientes notas tenían wikilinks apuntando a ella: ${backlinks.map((b) => `[[${b}]]`).join(', ')}. Revísalas para actualizar o eliminar esos enlaces.`;
       }
@@ -2678,6 +2807,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      const copia = crearInstantanea('antes-de-migrar-etiquetas');
       let migradas = 0;
       let bajadas = 0;
       const errores = [];
@@ -2737,6 +2867,104 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `- Notas con el frontmatter ya limpio: **${migradas}**\n` +
             `- Etiquetas bajadas al cuerpo: **${bajadas}**\n` +
             `- Fecha de modificación y autoría: preservadas\n` +
+            (copia ? `- Copia de seguridad previa: **${copia.nombre}** (${copia.notas} notas) — se recupera con restore_snapshot\n` : '') +
+            (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : '- Errores: ninguno'),
+        }],
+      };
+    }
+
+    // ── list_snapshots / create_snapshot / restore_snapshot ─────────────
+    if (name === 'list_snapshots') {
+      const todas = listarInstantaneas();
+      if (!todas.length) {
+        return { content: [{ type: 'text', text: `No hay ninguna copia todavía. Se crean solas antes de cada operación masiva, o a mano con create_snapshot.\nCarpeta: ${SNAPSHOT_DIR}` }] };
+      }
+      const lineas = todas.map((n) => {
+        const [fecha, ...motivo] = n.split('_');
+        let notas = '?';
+        try { notas = String(contarMd(path.join(SNAPSHOT_DIR, n))); } catch {}
+        return `- **${n}** — ${fecha.replace('T', ' ')} · ${motivo.join('_') || 'sin motivo'} · ${notas} notas`;
+      });
+      return {
+        content: [{ type: 'text', text: `${todas.length} copia(s) disponibles (se conservan las ${SNAPSHOT_KEEP} últimas):\n\n${lineas.join('\n')}\n\nCarpeta: ${SNAPSHOT_DIR}` }],
+      };
+    }
+
+    if (name === 'create_snapshot') {
+      const copia = crearInstantanea(args?.reason || 'manual');
+      if (!copia) {
+        return { content: [{ type: 'text', text: `No se pudo crear la copia (revisa permisos de ${SNAPSHOT_DIR}).` }], isError: true };
+      }
+      return { content: [{ type: 'text', text: `Copia creada: **${copia.nombre}** — ${copia.notas} notas.\n${copia.ruta}` }] };
+    }
+
+    if (name === 'restore_snapshot') {
+      const dryRun = args?.dry_run !== false;
+      const origen = path.join(SNAPSHOT_DIR, args.name);
+      if (!fs.existsSync(origen)) {
+        return { content: [{ type: 'text', text: `No existe la copia "${args.name}". Mira las disponibles con list_snapshots.` }], isError: true };
+      }
+
+      // Comparar la copia con el estado actual, nota a nota.
+      const enCopia = new Map();
+      (function recorrer(dir, rel) {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const src = path.join(dir, e.name);
+          const relativo = rel ? `${rel}/${e.name}` : e.name;
+          if (e.isDirectory()) recorrer(src, relativo);
+          else if (e.name.endsWith('.md')) enCopia.set(relativo, src);
+        }
+      })(origen, '');
+
+      const cambiadas = [];
+      const desaparecidas = [];
+      const nuevasDesde = [];
+      for (const [rel, src] of enCopia) {
+        const actual = path.join(MEMORY_ROOT, rel);
+        if (!fs.existsSync(actual)) desaparecidas.push(rel);
+        else if (fs.readFileSync(actual, 'utf8') !== fs.readFileSync(src, 'utf8')) cambiadas.push(rel);
+      }
+      for (const note of getCachedAllNotes()) {
+        const rel = path.relative(MEMORY_ROOT, note.path);
+        if (!enCopia.has(rel)) nuevasDesde.push(rel);
+      }
+
+      if (dryRun) {
+        const bloque = (t, arr) => `- ${arr.length} ${t}${arr.length ? `:\n  ${arr.slice(0, 20).join('\n  ')}${arr.length > 20 ? `\n  … y ${arr.length - 20} más` : ''}` : ''}`;
+        return {
+          content: [{
+            type: 'text',
+            text: `SIMULACIÓN de la restauración de **${args.name}** (no se ha tocado nada).\n\n` +
+              `${bloque('nota(s) volverían a su versión anterior', cambiadas)}\n` +
+              `${bloque('nota(s) borradas desde entonces se recuperarían', desaparecidas)}\n` +
+              `${bloque('nota(s) creadas después NO se tocan (siguen como están)', nuevasDesde)}\n\n` +
+              `Para hacerlo de verdad: \`restore_snapshot(name: "${args.name}", dry_run: false)\`. Antes se guardará una copia del estado actual.`,
+          }],
+        };
+      }
+
+      // Copia de seguridad del estado actual: restaurar también se puede deshacer.
+      const previa = crearInstantanea('antes-de-restaurar');
+      let restauradas = 0;
+      const errores = [];
+      for (const [rel, src] of enCopia) {
+        try {
+          const destino = safeJoin(rel);
+          fs.mkdirSync(path.dirname(destino), { recursive: true });
+          fs.copyFileSync(src, destino);
+          restauradas++;
+        } catch (e) {
+          errores.push(`${rel}: ${e.message}`);
+        }
+      }
+      invalidateCache();
+      return {
+        content: [{
+          type: 'text',
+          text: `Restauración completada desde **${args.name}**.\n\n` +
+            `- Notas restauradas: **${restauradas}**\n` +
+            `- Notas creadas después de la copia: intactas (${nuevasDesde.length})\n` +
+            (previa ? `- Copia del estado anterior: **${previa.nombre}** (por si hay que deshacer)\n` : '') +
             (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : '- Errores: ninguno'),
         }],
       };
@@ -2915,6 +3143,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      const copia = crearInstantanea('antes-de-podar-etiquetas');
       let tocadas = 0;
       const errores = [];
       for (const p of plan) {
@@ -2948,6 +3177,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             `- Notas actualizadas: **${tocadas}**\n` +
             `- Etiquetas retiradas: **${totalRetiradas}**\n` +
             `- Fecha de modificación y autoría: preservadas\n` +
+            (copia ? `- Copia de seguridad previa: **${copia.nombre}** (${copia.notas} notas) — se recupera con restore_snapshot\n` : '') +
             (errores.length ? `\nErrores (${errores.length}):\n- ${errores.join('\n- ')}` : `- Errores: ninguno`),
         }],
       };

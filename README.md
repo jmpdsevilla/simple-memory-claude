@@ -162,7 +162,7 @@ Solo actívalo si usas un editor compatible con la spec: los que no la soportan 
 
 ## Las herramientas
 
-35 en total. Las 33 primeras funcionan siempre. Las 2 de autoría (`read_authorship`, `migrate_annotations`) solo se exponen si arrancas el servidor con `KB_ENABLE_ANNOTATIONS=1`.
+38 en total. Las 36 primeras funcionan siempre. Las 2 de autoría (`read_authorship`, `migrate_annotations`) solo se exponen si arrancas el servidor con `KB_ENABLE_ANNOTATIONS=1`.
 
 El listado de herramientas viaja en cada sesión y ocupa contexto. Si tu cliente tiene poca ventana, arranca con `KB_TOOLS=core` y se expondrán solo las 15 de uso diario (la mitad de tokens). Por defecto se exponen todas.
 
@@ -222,6 +222,9 @@ El listado de herramientas viaja en cada sesión y ocupa contexto. Si tu cliente
 | `audit_tags` | Salud de las etiquetas (y corrección de las mal formadas) |
 | `prune_tags` | Fusionar variantes y recortar las notas con etiquetas de más |
 | `vault_health` | Parte de salud de la bóveda en una sola llamada |
+| `create_snapshot` | Copia de seguridad completa, a demanda |
+| `list_snapshots` | Ver las copias disponibles |
+| `restore_snapshot` | Volver a una copia anterior (simula por defecto) |
 | `migrate_yaml_tags` | Bajar al cuerpo las etiquetas que quedan en el frontmatter YAML |
 
 ### Autoría (con `KB_ENABLE_ANNOTATIONS=1`)
