@@ -1,6 +1,6 @@
 # Referencia de herramientas — Las 33 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.3.0).
+Referencia completa de todas las herramientas de BovedIA (v2.4.1).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -25,7 +25,7 @@ Crea o actualiza una nota (comportamiento de upsert completo: el cuerpo se sobre
 | `title` | string | sí | Título de la nota |
 | `content` | string | sí | Contenido Markdown (sin frontmatter ni h1) |
 | `category` | string | sí | Carpeta de destino |
-| `tags` | array | no | Tags para clasificar la nota |
+| `tags` | array | no | Etiquetas para el frontmatter YAML. Desaconsejado: la clasificación va como hashtags al final del cuerpo |
 | `name` | string | no | Slug existente a actualizar |
 
 ### read_note
@@ -49,6 +49,8 @@ Busca notas por texto libre con lógica AND. No distingue mayúsculas ni acentos
 ### list_notes
 
 Lista notas con sus metadatos, opcionalmente filtradas. El filtro de categoría es recursivo (incluye subcarpetas). El filtro por etiqueta mira tanto los hashtags del cuerpo como los tags del frontmatter YAML.
+
+La raíz de la bóveda se puede pedir como `"."` (la forma que se escribe al guardar) o como `raiz`: son equivalentes, y filtrar por ella no arrastra las notas de las subcarpetas. Vale para todas las herramientas con parámetro `category`.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|

@@ -8,6 +8,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.4.1] — 2026-07-25
+
+### Cambiado
+
+**El parámetro `tags` de `write_note` queda marcado como desaconsejado** en su descripción y en la referencia. Sigue funcionando por compatibilidad, pero la clasificación va como hashtags `#snake_case` en la última línea del cuerpo: es lo único que leen los editores que agrupan por etiqueta. Si se omite, el frontmatter no escribe el campo.
+
+---
+
 ## [2.4.0] — 2026-07-25
 
 ### Corregido

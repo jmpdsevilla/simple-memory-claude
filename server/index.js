@@ -1012,7 +1012,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.4.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.4.1' },
   { capabilities: { tools: {} } }
 );
 
@@ -1076,7 +1076,7 @@ const ALL_TOOLS = [
             type: 'string',
             description: 'Subcarpeta donde guardar la nota (p. ej. "proyectos", "clientes/nombre-cliente" o "conocimiento/problemas-resueltos"). La estructura de carpetas es libre: usa las categorías que tu trabajo pida. Para ver las que ya existen, usa get_index.',
           },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Lista de tags para clasificar la nota' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Etiquetas para el frontmatter YAML. Opcional y desaconsejado: los editores que agrupan por etiqueta no leen el frontmatter, así que la clasificación se pone como hashtags #snake_case en la última línea del cuerpo. Si se omite, no se escribe el campo.' },
           name: { type: 'string', description: 'Slug del archivo existente a actualizar (sin extensión .md). Úsalo cuando el título no coincide con el nombre de archivo actual. Si se omite, el slug se genera automáticamente desde el título.' },
         },
         required: ['title', 'content', 'category'],
