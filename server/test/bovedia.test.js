@@ -482,6 +482,18 @@ describe('BovedIA', () => {
       assert.doesNotMatch(texto, /#raro3/);    // uso único: fuera
     });
 
+    test('conserva la etiqueta que da identidad a la nota aunque sea de uso único', async () => {
+      await pr.llamar('write_note', {
+        title: 'Hyperframes fabricación de vídeo',
+        content: 'Cuerpo.\n\n#tipo_referencia #smc #comun #otro_comun #hyperframes #autor_claude',
+        category: 'conocimiento',
+      });
+      await pr.llamar('prune_tags', { ...OPCIONES, dry_run: false, max: 5 });
+      const { texto } = await pr.llamar('read_note', { name: 'hyperframes-fabricacion-de-video' });
+      // #hyperframes está en el título: se queda por delante de las genéricas.
+      assert.match(texto, /#hyperframes/);
+    });
+
     test('no toca las notas que ya cumplen', async () => {
       const antes = await pr.llamar('read_frontmatter', { name: 'justa' });
       await pr.llamar('prune_tags', { ...OPCIONES, dry_run: false });

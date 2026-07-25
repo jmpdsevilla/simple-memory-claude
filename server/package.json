@@ -1,6 +1,6 @@
 {
   "name": "bovedia",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "BovedIA — sistema de memoria personal para Claude Code: notas Markdown en tu disco, sincronizadas en la nube",
   "mcpName": "io.github.jmpdsevilla/bovedia",
   "main": "index.js",

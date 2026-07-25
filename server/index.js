@@ -1030,7 +1030,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.5.1' },
   { capabilities: { tools: {} } }
 );
 
@@ -2694,9 +2694,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const fijas = tags.filter((t) => keep.has(t) && !tipo.includes(t));
         const temas = tags.filter((t) => !tipo.includes(t) && !fijas.includes(t));
 
-        const porFrecuencia = [...temas].sort(
-          (a, b) => (frecuencia.get(b) - frecuencia.get(a)) || temas.indexOf(a) - temas.indexOf(b),
-        );
+        // Una etiqueta que aparece en el título o en el slug es la identidad de
+        // la nota: se conserva aunque hoy no la comparta ninguna otra, porque es
+        // la que agrupará cuando lleguen más notas del mismo tema. Sin esta
+        // regla, ordenar solo por frecuencia se lleva por delante lo específico
+        // (#hyperframes) y deja lo genérico (#claude).
+        const identidad = foldText(`${note.name} ${note.frontmatter?.title || ''}`).replace(/[-_]+/g, ' ');
+        const esIdentidad = (t) => identidad.includes(foldText(t).replace(/_+/g, ' '));
+
+        const porFrecuencia = [...temas].sort((a, b) => {
+          const ia = esIdentidad(a) ? 1 : 0;
+          const ib = esIdentidad(b) ? 1 : 0;
+          if (ia !== ib) return ib - ia;
+          return (frecuencia.get(b) - frecuencia.get(a)) || temas.indexOf(a) - temas.indexOf(b);
+        });
         const hueco = Math.max(0, max - tipo.length - fijas.length);
         const conservadas = porFrecuencia.slice(0, hueco);
         const retiradas = porFrecuencia.slice(hueco);

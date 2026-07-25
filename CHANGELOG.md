@@ -8,6 +8,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.5.1] — 2026-07-25
+
+### Corregido
+
+**`prune_tags` ya no se lleva por delante la etiqueta que da identidad a la nota.** Ordenar las temáticas solo por frecuencia global tenía un efecto perverso: conservaba lo genérico y retiraba lo específico. En una nota titulada "HyperFrames — fabricación de vídeo" se iba `#hyperframes` y se quedaba `#claude`; en la de context engineering se iban `#context_engineering` y `#prompt_engineering`, que son exactamente su tema. Ahora las etiquetas que aparecen en el título o el slug se conservan por delante de las genéricas, aunque hoy sean de uso único: son las que agruparán en cuanto lleguen más notas de ese tema. Lo detectó la simulación antes de tocar nada.
+
+---
+
 ## [2.5.0] — 2026-07-25
 
 ### Añadido

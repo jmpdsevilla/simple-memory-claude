@@ -1,6 +1,6 @@
 # Referencia de herramientas — Las 34 herramientas MCP
 
-Referencia completa de todas las herramientas de BovedIA (v2.5.0).
+Referencia completa de todas las herramientas de BovedIA (v2.5.1).
 
 Las herramientas se agrupan en seis bloques:
 1. **CRUD base** (9) — lectura y escritura de notas
@@ -335,7 +335,7 @@ Informe de salud de las etiquetas de la bóveda: hashtags con guión medio, vari
 
 ### prune_tags
 
-Poda la taxonomía: fusiona variantes que significan lo mismo y recorta las notas que llevan más etiquetas de la cuenta. Conserva el `#tipo_*`, lo indicado en `keep` y las etiquetas más usadas; retira primero las de uso único, que no agrupan nada (una categoría con una sola nota no es una categoría) y cuyo contenido sigue estando en el texto de la nota. Preserva la fecha de modificación y la autoría, y no toca las notas que ya cumplen.
+Poda la taxonomía: fusiona variantes que significan lo mismo y recorta las notas que llevan más etiquetas de la cuenta. Conserva el `#tipo_*`, lo indicado en `keep`, **las etiquetas que aparecen en el título de la nota** (son su identidad: agruparán en cuanto lleguen más notas del mismo tema) y las más usadas; retira primero las de uso único ajenas al título, que no agrupan nada (una categoría con una sola nota no es una categoría) y cuyo contenido sigue estando en el texto de la nota. Preserva la fecha de modificación y la autoría, y no toca las notas que ya cumplen.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
