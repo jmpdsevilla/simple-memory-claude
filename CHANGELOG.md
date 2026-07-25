@@ -8,6 +8,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.3.1] — 2026-07-25
+
+### Corregido
+
+**`migrate_yaml_tags` también limpia el `tags: []` vacío.** Las notas cuyo campo `tags` existía pero no tenía valores se saltaban —no había nada que rescatar—, así que el frontmatter quedaba desigual: unas notas sin el campo y otras con la línea vacía. Ahora se procesan igual y el resultado es uniforme.
+
+---
+
 ## [2.3.0] — 2026-07-25
 
 ### Añadido
@@ -22,7 +30,7 @@ El problema que resuelve: los editores que agrupan por etiqueta (iA Writer y sim
 
 ### Pruebas
 
-43 casos (9 nuevos para la migración: simulación, creación de la línea de hashtags, no duplicación, limpieza del frontmatter, preservación de fechas, idempotencia, `drop` y que lo migrado quede buscable y filtrable).
+44 casos (10 nuevos para la migración: simulación, creación de la línea de hashtags, no duplicación, limpieza del frontmatter, preservación de fechas, idempotencia, `drop` y que lo migrado quede buscable y filtrable).
 
 ---
 

@@ -986,7 +986,7 @@ const server = new Server(
   // Nombre con el que el servidor se anuncia. Por defecto 'bovedia'; se puede
   // fijar con KB_SERVER_NAME para conservar un identificador propio en una
   // instalación ya existente sin cambiar nada del flujo de trabajo diario.
-  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.3.0' },
+  { name: process.env.KB_SERVER_NAME || 'bovedia', version: '2.3.1' },
   { capabilities: { tools: {} } }
 );
 
@@ -2484,9 +2484,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const plan = [];
       for (const note of scoped) {
         const yaml = note.frontmatter?.tags;
+        // Se procesan también las notas cuyo campo `tags` existe pero está vacío
+        // (`tags: []`): no hay nada que rescatar, pero sí que limpiar, y si no
+        // el frontmatter queda desigual de una nota a otra.
+        if (yaml === undefined) continue;
         const lista = Array.isArray(yaml) ? yaml : (yaml ? [yaml] : []);
         const limpios = lista.map((t) => normalizeTagName(t)).filter(Boolean);
-        if (!limpios.length) continue;
 
         const enCuerpo = new Set(extractHashtags(note.body || '').map((h) => normalizeTagName(h)));
         const rescatar = [];

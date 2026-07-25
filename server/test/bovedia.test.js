@@ -380,6 +380,24 @@ describe('BovedIA', () => {
       assert.match(texto, /created:/);
     });
 
+    test('también limpia las notas que solo tenían "tags: []" vacío', async () => {
+      // Una nota heredada de una versión anterior: campo presente, sin valores.
+      const ruta = path.join(raiz, 'conocimiento', 'heredada.md');
+      fs.writeFileSync(ruta, '---\ntitle: Heredada\ncategory: conocimiento\ntags: []\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\n# Heredada\n\nCuerpo.\n\n#tipo_referencia\n');
+      // El archivo se ha creado por fuera del MCP: una escritura cualquiera
+      // invalida la caché del índice y la nota entra en el siguiente barrido.
+      await mig.llamar('write_note', { title: 'Toque', content: 'x', category: 'conocimiento' });
+
+      const previo = await mig.llamar('migrate_yaml_tags');
+      assert.match(previo.texto, /Notas con tags en el frontmatter: \*\*1\*\*/);
+
+      await mig.llamar('migrate_yaml_tags', { dry_run: false });
+      const contenido = fs.readFileSync(ruta, 'utf8');
+      assert.doesNotMatch(contenido, /tags:/);
+      assert.match(contenido, /updated: 2026-01-01/); // la fecha no se toca
+      assert.match(contenido, /#tipo_referencia/);
+    });
+
     test('es idempotente: una segunda pasada no encuentra nada', async () => {
       const { texto } = await mig.llamar('migrate_yaml_tags', { dry_run: false });
       assert.match(texto, /Nada que migrar/);
