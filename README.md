@@ -218,7 +218,7 @@ El listado de herramientas viaja en cada sesión y ocupa contexto. Si tu cliente
 | `move_category` | Renombrar una carpeta (actualiza el frontmatter de cada nota) |
 | `validate_note` | Revisar frontmatter, hashtags, "Ver también" y enlaces rotos |
 | `bulk_move` | Mover varias notas a la misma categoría |
-| `due_notes` | Notas programadas que ya toca sacar hoy |
+| `due_notes` | Notas programadas que ya toca sacar hoy, avisando de las que parecen ya hechas o duplicadas |
 | `audit_tags` | Salud de las etiquetas (y corrección de las mal formadas) |
 | `prune_tags` | Fusionar variantes y recortar las notas con etiquetas de más |
 | `vault_health` | Parte de salud de la bóveda en una sola llamada |

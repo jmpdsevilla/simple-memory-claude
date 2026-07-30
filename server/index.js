@@ -1623,7 +1623,7 @@ const ALL_TOOLS = [
     // ── Bloque 5: rutina de la bóveda ────────────────────────────────────
     {
       name: 'due_notes',
-      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión.',
+      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión. Además AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
       inputSchema: {
         type: 'object',
         properties: {

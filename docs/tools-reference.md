@@ -314,6 +314,13 @@ Añade el bloque de autoría a todas las notas existentes de una sola vez (conse
 
 Devuelve solo las notas programadas cuya fecha ya ha llegado. Lee la línea `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta indicada y la compara con hoy. Pensada para la comprobación de arranque de sesión: una sola llamada barata en lugar de abrir las notas una a una.
 
+Con cada tarea vencida devuelve también su fecha de modificación y, si la hay, la **sospecha de que ya esté cerrada**. Una nota programada solo sabe su día, no si su trabajo se hizo, así que se cruzan dos señales que sí lo dicen:
+
+- **Las notas que la tarea enlaza se han modificado en su fecha o después** — alguien ya trabajó en eso, así que la tarea probablemente esté cumplida y sobreviva por olvido.
+- **Otra tarea posterior comparte dos o más de esas notas enlazadas** — la ha absorbido, y este registro es el duplicado que sobra.
+
+La regla que sostiene esto es **una tarea, un registro**: si se resuelve, su nota se borra; si se pasa a otro día, se cambia *su* fecha `APARECER`, nunca se crea otra nota. Las herramientas de escritura avisan en la misma línea: al escribir en una nota que una tarea vencida enlaza, y al escribir en la carpeta de programadas.
+
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
 | `category` | string | no | Carpeta de programadas. Por defecto `programado` |
