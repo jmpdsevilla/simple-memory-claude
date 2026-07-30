@@ -834,3 +834,121 @@ describe('candado escritura-solo-bandeja', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+// ─── Cierre de tareas programadas: una tarea, un registro ───────────────────
+// Regresión del fallo del 30-jul-2026: una sesión hacía el trabajo de madrugada,
+// documentaba las notas del tema y dejaba viva la nota de `programado/`, así que
+// al día siguiente la tarea volvía a salir como pendiente. El estado vivía en
+// dos sitios sin nada que los sincronizara.
+describe('cierre de tareas programadas', () => {
+  let root;
+  let kb;
+  const dia = (offset) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + offset);
+    return d.toISOString().split('T')[0];
+  };
+  const HOY = dia(0);
+  const AYER = dia(-1);
+  const ANTIGUO = dia(-30);
+
+  // Se escriben a mano para controlar la fecha `updated`, que es la señal que
+  // distingue una tarea ya trabajada de una que sigue pendiente de verdad.
+  const escribir = (categoria, slug, { title, updated, cuerpo }) => {
+    const dir = path.join(root, categoria);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `${slug}.md`),
+      `---\ntitle: ${title}\ncategory: ${categoria}\ncreated: ${ANTIGUO}\nupdated: ${updated}\n---\n\n# ${title}\n\n${cuerpo}\n`,
+    );
+  };
+
+  before(async () => {
+    root = bovedaTemporal('programados');
+
+    // Trabajo tocado hoy: las notas del tema se modificaron.
+    escribir('proyectos', 'asistente-del-cliente', { title: 'Asistente del cliente', updated: HOY, cuerpo: 'Montado y probado.' });
+    escribir('proyectos', 'captura-de-leads', { title: 'Captura de leads', updated: HOY, cuerpo: 'Webhook conectado.' });
+    // Trabajo intacto: nadie lo ha tocado desde hace un mes.
+    escribir('sistema', 'permisos-del-agente', { title: 'Permisos del agente', updated: ANTIGUO, cuerpo: 'Sin tocar.' });
+
+    // Tarea CUMPLIDA que se quedó viva: vencía ayer y sus notas son de hoy.
+    escribir('programado', 'probar-el-asistente', {
+      title: 'Probar el asistente', updated: AYER,
+      cuerpo: `> APARECER: ${AYER}\n\nProbar [[asistente-del-cliente]] y cerrar [[captura-de-leads]].`,
+    });
+    // Tarea REALMENTE pendiente: vence hoy y su nota no se ha tocado.
+    escribir('programado', 'limpiar-los-permisos', {
+      title: 'Limpiar los permisos', updated: AYER,
+      cuerpo: `> APARECER: ${HOY}\n\nAuditar [[permisos-del-agente]].`,
+    });
+    // Tarea posterior que ABSORBE a la primera: comparte sus dos enlaces.
+    escribir('programado', 'sesion-agrupada-de-asistentes', {
+      title: 'Sesión agrupada de asistentes', updated: HOY,
+      cuerpo: `> APARECER: ${dia(2)}\n\nProbar [[asistente-del-cliente]] y revisar [[captura-de-leads]].`,
+    });
+
+    kb = await new Cliente(root).iniciar();
+  });
+
+  after(() => {
+    kb.cerrar();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('due_notes señala la tarea cuyo trabajo ya se tocó', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    assert.match(texto, /probar-el-asistente/);
+    assert.match(texto, /COMPROBAR ANTES DE SACARLA/);
+    assert.match(texto, /asistente-del-cliente/);
+  });
+
+  test('due_notes detecta que otra tarea posterior la absorbió', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    assert.match(texto, /POSIBLE DUPLICADO/);
+    assert.match(texto, /sesion-agrupada-de-asistentes/);
+  });
+
+  test('due_notes NO señala la tarea que sigue pendiente de verdad', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    const bloque = texto.split('limpiar-los-permisos')[1]?.split('- **')[0] ?? '';
+    assert.doesNotMatch(bloque, /COMPROBAR ANTES DE SACARLA|POSIBLE DUPLICADO/);
+  });
+
+  test('due_notes muestra la fecha de modificación de cada tarea', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    assert.match(texto, new RegExp(`modificada: ${AYER}`));
+  });
+
+  test('editar una nota que una tarea vencida enlaza avisa de cerrarla', async () => {
+    const { texto } = await kb.llamar('append_to_note', {
+      name: 'asistente-del-cliente', content: 'Probado con el cliente.',
+    });
+    assert.match(texto, /TAREA PROGRAMADA SIN CERRAR/);
+    assert.match(texto, /probar-el-asistente/);
+    assert.match(texto, /Una tarea, un registro/);
+  });
+
+  test('editar una nota que ninguna tarea enlaza no dice nada', async () => {
+    await kb.llamar('write_note', { title: 'Nota suelta', content: 'x', category: 'conocimiento' });
+    const { texto } = await kb.llamar('append_to_note', { name: 'nota-suelta', content: 'y' });
+    assert.doesNotMatch(texto, /TAREA PROGRAMADA/);
+  });
+
+  test('crear una tarea nueva recuerda la regla y lista las abiertas', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Repasar los dos asistentes',
+      content: `> APARECER: ${dia(5)}\n\nRepasar [[asistente-del-cliente]] y [[captura-de-leads]].`,
+      category: 'programado',
+    });
+    assert.match(texto, /UNA TAREA, UN REGISTRO/);
+    assert.match(texto, /Tratan de lo mismo/);
+    assert.match(texto, /probar-el-asistente/);
+    assert.match(texto, /Tareas que ya tocaban y siguen abiertas/);
+  });
+
+  test('escribir fuera de programado no dispara el recordatorio de registro único', async () => {
+    const { texto } = await kb.llamar('write_note', { title: 'Apunte técnico', content: 'z', category: 'conocimiento' });
+    assert.doesNotMatch(texto, /UNA TAREA, UN REGISTRO/);
+  });
+});

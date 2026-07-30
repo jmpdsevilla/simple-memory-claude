@@ -834,6 +834,106 @@ function parseAparecer(body) {
   return m ? m[1] : null;
 }
 
+// ─── Cierre de tareas programadas: una tarea, un registro ───────────────────
+// El fallo que esto arregla (30-jul-2026): el estado de una tarea vivía en dos
+// sitios sin nada que los sincronizara — la fecha APARECER de la nota de
+// `programado/` y el trabajo hecho en las notas temáticas. Dos copias del mismo
+// estado divergen siempre; no es descuido de una sesión, es aritmética. Encima
+// el paso de cerrar el programado estaba al final de la lista de tareas, que es
+// donde se cae todo: una sesión hacía el trabajo de madrugada, documentaba las
+// notas del tema y dejaba el disparador vivo, así que al día siguiente la tarea
+// volvía a salir como pendiente.
+//
+// La regla es de pura lógica: UNA TAREA, UN REGISTRO. Si se resuelve, su nota
+// se borra. Si se pasa a otro día, se cambia SU fecha APARECER. Nunca una nota
+// nueva que absorba a otra dejándola viva.
+//
+// Va aquí y no en un hook de Claude Code por tres razones: un hook solo actúa
+// dentro de Claude Code (desde Claude Desktop no protegería nada), ya se han
+// caído hooks en silencio, y un script de shell no puede saber que una nota
+// sustituye a otra — para eso hay que mirar la bóveda, y quien la mira es este
+// servidor, único camino de escritura que la bóveda permite.
+const PROGRAMADO = 'programado';
+
+// Programados con fecha, ordenados. `wikilinks` viene ya resuelto en el índice.
+function listarProgramados(allNotes) {
+  return allNotes
+    .filter((n) => categoryMatches(n.category, PROGRAMADO))
+    .map((n) => ({
+      name: n.name,
+      title: n.frontmatter?.title || n.name,
+      fecha: parseAparecer(n.body || ''),
+      updated: n.frontmatter?.updated || null,
+      wikilinks: [...new Set((n.wikilinks || []).map((w) => slugify(w)))],
+    }))
+    .filter((p) => p.fecha)
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+
+// Aviso al escribir en una nota que un programado vencido enlaza. Ese es el
+// momento exacto en que se está haciendo ese trabajo, y por tanto el momento de
+// cerrar la tarea — no al final de la sesión, cuando ya no queda nadie. Si no
+// hay coincidencia, silencio absoluto: el aviso es quirúrgico, no ruido.
+function avisoTareaAbierta(nombreNota) {
+  if (!nombreNota) return '';
+  let programados;
+  try {
+    programados = listarProgramados(getCachedAllNotes());
+  } catch {
+    return '';
+  }
+  const hoy = today();
+  const slug = slugify(nombreNota);
+  const afectados = programados.filter(
+    (p) => p.fecha <= hoy && slugify(p.name) !== slug && p.wikilinks.includes(slug),
+  );
+  if (!afectados.length) return '';
+  const lista = afectados
+    .map((p) => `- ${p.name} — APARECER: ${p.fecha}${p.fecha < hoy ? ' (vencida)' : ' (hoy)'}`)
+    .join('\n');
+  return `\n\nTAREA PROGRAMADA SIN CERRAR — la nota que acabas de tocar la enlaza ${
+    afectados.length === 1 ? 'una tarea programada que ya toca' : `${afectados.length} tareas programadas que ya tocan`
+  }:\n${lista}\nSi ese trabajo ya está hecho, borra esa nota (delete_note) tras llevar su conclusión a su sitio definitivo. Si se pasa a otro día, cambia SU fecha APARECER. Una tarea, un registro: no crear una nota nueva que la absorba dejándola viva.`;
+}
+
+// Aviso al escribir en `programado/`: pone delante las tareas que ya existen,
+// señalando las que tratan de lo mismo (comparten notas enlazadas). Es el caso
+// que provocó el fallo: una nota nueva agrupaba varias tareas y las originales
+// siguieron vivas, duplicando el registro.
+function avisoProgramadoNuevo(nombreNota, cuerpo) {
+  let programados;
+  try {
+    programados = listarProgramados(getCachedAllNotes());
+  } catch {
+    return '';
+  }
+  const slug = slugify(nombreNota);
+  const otros = programados.filter((p) => slugify(p.name) !== slug);
+  if (!otros.length) return '';
+
+  const hoy = today();
+  const enlacesNuevo = new Set(extractLinkTargets(cuerpo || '').map((l) => slugify(l)));
+  const solapan = otros
+    .map((p) => ({ p, comunes: p.wikilinks.filter((w) => enlacesNuevo.has(w)) }))
+    .filter((x) => x.comunes.length >= 2)
+    .sort((a, b) => b.comunes.length - a.comunes.length);
+  const abiertos = otros.filter((p) => p.fecha <= hoy);
+
+  const partes = [];
+  if (solapan.length) {
+    partes.push(`Tratan de lo mismo (notas enlazadas en común):\n` + solapan.slice(0, 5)
+      .map((x) => `- ${x.p.name} — APARECER: ${x.p.fecha} · en común: ${x.comunes.slice(0, 4).join(', ')}`)
+      .join('\n'));
+  }
+  if (abiertos.length) {
+    partes.push(`Tareas que ya tocaban y siguen abiertas:\n` + abiertos
+      .map((p) => `- ${p.name} — APARECER: ${p.fecha}`)
+      .join('\n'));
+  }
+  if (!partes.length) return '';
+  return `\n\nUNA TAREA, UN REGISTRO — acabas de escribir en ${PROGRAMADO}/.\n${partes.join('\n')}\nSi esta nota sustituye o absorbe a alguna de esas, bórrala AHORA. Aplazar una tarea es cambiar SU fecha APARECER, nunca crear otra nota.`;
+}
+
 // Extrae hashtags `#snake_case` del cuerpo (excluye bloques de código)
 function extractHashtags(body) {
   const stripped = stripCode(body);
@@ -1805,6 +1905,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       invalidateCache();
+      // El aviso se calcula DESPUÉS de invalidar la caché para que el índice ya
+      // incluya esta nota y no se señale a sí misma como duplicada.
+      msg += categoryMatches(safeCategory(args.category), PROGRAMADO)
+        ? avisoProgramadoNuevo(slug, body)
+        : avisoTareaAbierta(slug);
       return { content: [{ type: 'text', text: msg }] };
     }
 
@@ -2176,7 +2281,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       persistNote(note.filePath, note.frontmatter, newBody, bodyAuthors);
       invalidateCache();
-      return { content: [{ type: 'text', text: `Nota "${args.name}" editada (${occurrences} ${occurrences === 1 ? 'ocurrencia reemplazada' : 'ocurrencias reemplazadas'}).` }] };
+      return { content: [{ type: 'text', text: `Nota "${args.name}" editada (${occurrences} ${occurrences === 1 ? 'ocurrencia reemplazada' : 'ocurrencias reemplazadas'}).${avisoTareaAbierta(args.name)}` }] };
     }
 
     // ── append_to_note ──────────────────────────────────────────────────
@@ -2197,7 +2302,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       persistNote(note.filePath, note.frontmatter, newBody, newBodyAuthors);
       invalidateCache();
-      return { content: [{ type: 'text', text: `Contenido añadido al final de "${args.name}"${trailing ? ' (antes del bloque de hashtags).' : '.'}` }] };
+      return { content: [{ type: 'text', text: `Contenido añadido al final de "${args.name}"${trailing ? ' (antes del bloque de hashtags).' : '.'}${avisoTareaAbierta(args.name)}` }] };
     }
 
     // ── prepend_to_note ─────────────────────────────────────────────────
@@ -2222,7 +2327,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       persistNote(note.filePath, note.frontmatter, newBody, newBodyAuthors);
       invalidateCache();
-      return { content: [{ type: 'text', text: `Contenido insertado al inicio de "${args.name}".` }] };
+      return { content: [{ type: 'text', text: `Contenido insertado al inicio de "${args.name}".${avisoTareaAbierta(args.name)}` }] };
     }
 
     // ── update_section ──────────────────────────────────────────────────
@@ -2246,7 +2351,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       persistNote(note.filePath, note.frontmatter, newBody, newBodyAuthors);
       invalidateCache();
-      return { content: [{ type: 'text', text: `Sección "${args.section_title}" actualizada en "${args.name}".` }] };
+      return { content: [{ type: 'text', text: `Sección "${args.section_title}" actualizada en "${args.name}".${avisoTareaAbierta(args.name)}` }] };
     }
 
     // ── insert_after_section ────────────────────────────────────────────
@@ -2270,7 +2375,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       persistNote(note.filePath, note.frontmatter, newBody, newBodyAuthors);
       invalidateCache();
-      return { content: [{ type: 'text', text: `Bloque insertado después de la sección "${args.after_section_title}" en "${args.name}".` }] };
+      return { content: [{ type: 'text', text: `Bloque insertado después de la sección "${args.after_section_title}" en "${args.name}".${avisoTareaAbierta(args.name)}` }] };
     }
 
     // ── list_broken_links ───────────────────────────────────────────────
@@ -2705,16 +2810,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       for (const note of scoped) {
         const fecha = parseAparecer(note.body || '');
         if (!fecha) { sinFecha.push(note.name); continue; }
-        const item = { name: note.name, fecha, title: note.frontmatter?.title || note.name };
+        const item = {
+          name: note.name,
+          fecha,
+          title: note.frontmatter?.title || note.name,
+          updated: note.frontmatter?.updated || null,
+          wikilinks: [...new Set((note.wikilinks || []).map((w) => slugify(w)))],
+        };
         if (fecha <= hoy) due.push(item); else upcoming.push(item);
       }
       due.sort((a, b) => a.fecha.localeCompare(b.fecha));
       upcoming.sort((a, b) => a.fecha.localeCompare(b.fecha));
 
+      // Detección de tareas que ya están hechas y siguen vivas. No basta con
+      // comparar fechas: una nota programada solo sabe su día, no si su trabajo
+      // se hizo. Las dos señales que sí lo dicen, y que están en el índice:
+      //  (a) las notas que la tarea enlaza se han modificado en su día o después
+      //      → alguien ya trabajó en eso; la tarea probablemente esté cumplida.
+      //  (b) otra nota programada posterior comparte 2+ notas enlazadas
+      //      → la absorbió, y este registro es el duplicado que sobra.
+      // Sin esto, `due_notes` saca como pendiente lo que se cerró de madrugada.
+      const bySlug = new Map(allNotes.map((n) => [slugify(n.name), n]));
+      const todosProgramados = listarProgramados(allNotes);
+      const sospechas = new Map();
+      for (const d of due) {
+        const tocadas = d.wikilinks
+          .map((w) => bySlug.get(w))
+          .filter((n) => n && n.frontmatter?.updated && n.frontmatter.updated >= d.fecha)
+          .map((n) => `${n.name} (${n.frontmatter.updated})`);
+        const sustitutos = todosProgramados
+          .filter((p) => slugify(p.name) !== slugify(d.name) && p.fecha > d.fecha &&
+            p.wikilinks.filter((w) => d.wikilinks.includes(w)).length >= 2)
+          .map((p) => `${p.name} (APARECER: ${p.fecha})`);
+        if (tocadas.length || sustitutos.length) {
+          sospechas.set(d.name, { tocadas, sustitutos });
+        }
+      }
+
+      const detalleSospecha = (nombre) => {
+        const s = sospechas.get(nombre);
+        if (!s) return '';
+        const lineas = [];
+        if (s.tocadas.length) {
+          lineas.push(`  COMPROBAR ANTES DE SACARLA: notas que enlaza y ya se han tocado — ${s.tocadas.join(', ')}`);
+        }
+        if (s.sustitutos.length) {
+          lineas.push(`  POSIBLE DUPLICADO: otra tarea posterior trata lo mismo — ${s.sustitutos.join(', ')}`);
+        }
+        return '\n' + lineas.join('\n');
+      };
+
       const partes = [];
       if (due.length) {
         partes.push(`${due.length} nota(s) programada(s) para hoy o antes (${hoy}):\n` +
-          due.map((d) => `- **${d.name}** — APARECER: ${d.fecha}${d.fecha < hoy ? ' (vencida)' : ''}\n  ${d.title}`).join('\n'));
+          due.map((d) => `- **${d.name}** — APARECER: ${d.fecha}${d.fecha < hoy ? ' (vencida)' : ''} · modificada: ${d.updated || 'sin dato'}\n  ${d.title}${detalleSospecha(d.name)}`).join('\n'));
+        if (sospechas.size) {
+          partes.push(`AVISO — ${sospechas.size} de esas tareas parece${sospechas.size === 1 ? '' : 'n'} estar ya hecha${sospechas.size === 1 ? '' : 's'} o duplicada${sospechas.size === 1 ? '' : 's'}. Comprobarlo ANTES de dárselas a José como pendientes: si el trabajo está hecho, la nota se borra; si la absorbe otra tarea, sobra. Una tarea, un registro.`);
+        }
       } else {
         partes.push(`Nada programado para hoy (${hoy}). ${scoped.length} nota(s) en "${category}", todas con fecha posterior.`);
       }
