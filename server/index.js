@@ -1623,7 +1623,7 @@ const ALL_TOOLS = [
     // ── Bloque 5: rutina de la bóveda ────────────────────────────────────
     {
       name: 'due_notes',
-      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión. Además AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
+      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy, CON todo su contexto servido de una vez. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión. Cuando hay tareas vencidas devuelve además el TEXTO ENTERO de cada una y el de las notas que enlaza, para no tener que ir a buscarlas: el planteamiento de una tarea puede estar equivocado y lo que lo desmiente suele estar justo en lo que enlaza, así que NO se responde repitiendo el titular de una tarea sin haber leído ese contexto. Y AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2815,6 +2815,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           fecha,
           title: note.frontmatter?.title || note.name,
           updated: note.frontmatter?.updated || null,
+          body: note.body || '',
           wikilinks: [...new Set((note.wikilinks || []).map((w) => slugify(w)))],
         };
         if (fecha <= hoy) due.push(item); else upcoming.push(item);
@@ -2860,6 +2861,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return '\n' + lineas.join('\n');
       };
 
+      // Contexto completo de las tareas de hoy, servido sin pedirlo.
+      // El fallo que tapa (1-ago-2026): `due_notes` devolvía un titular, la
+      // sesión lo tomaba por la conclusión ya masticada y contestaba sin abrir
+      // ni la tarea ni las fichas que la tarea enlaza — que eran justo las que
+      // desmentían su planteamiento. Una regla escrita ("acuérdate de leer lo
+      // que enlaza") es una regla que se salta; que el contenido venga solo por
+      // el mismo sitio por donde entra la tarea, no.
+      const CONTEXTO_MAX = 60000;
+      const construirContexto = () => {
+        if (!due.length) return null;
+        const bloques = [];
+        const yaPuesto = new Set(due.map((d) => slugify(d.name)));
+        const rotos = new Set();
+        let gastado = 0;
+        let cortado = false;
+        const trozo = (texto, nombre) => {
+          const restante = CONTEXTO_MAX - gastado;
+          if (restante <= 0) { cortado = true; return `[no incluido por espacio — leer con read_note("${nombre}")]`; }
+          gastado += Math.min(texto.length, restante);
+          if (texto.length <= restante) return texto;
+          cortado = true;
+          return `${texto.slice(0, restante)}\n[…cortada — leer entera con read_note("${nombre}")]`;
+        };
+
+        for (const d of due) {
+          bloques.push(`═══ TAREA: ${d.name} ═══\n${trozo(d.body, d.name)}`);
+          for (const w of d.wikilinks) {
+            if (yaPuesto.has(w)) continue;
+            const enlazada = bySlug.get(w);
+            if (!enlazada) { rotos.add(w); continue; }
+            yaPuesto.add(w);
+            bloques.push(`──── ${d.name} enlaza → ${enlazada.name} (${enlazada.category}) ────\n${trozo(enlazada.body || '', enlazada.name)}`);
+          }
+        }
+        if (rotos.size) bloques.push(`Enlaces sin nota (revisar): ${[...rotos].join(', ')}`);
+        if (cortado) bloques.push(`Parte del contexto no cabe entero (tope ${CONTEXTO_MAX} caracteres): leer con read_note lo que quede corto antes de decidir.`);
+        return 'CONTEXTO DE LAS TAREAS DE HOY — leerlo antes de responder a José.\n' +
+          'Van enteras la tarea y las notas que enlaza: no hay que ir a buscarlas, y no se contesta repitiendo el titular de una tarea sin haber leído lo que enlaza (el planteamiento de una tarea puede estar equivocado, y lo que lo desmiente suele ser justo lo que enlaza).\n\n' +
+          bloques.join('\n\n');
+      };
+
       const partes = [];
       if (due.length) {
         partes.push(`${due.length} nota(s) programada(s) para hoy o antes (${hoy}):\n` +
@@ -2877,6 +2919,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (sinFecha.length) {
         partes.push(`Sin línea APARECER (revisar): ${sinFecha.join(', ')}`);
       }
+      const contexto = construirContexto();
+      if (contexto) partes.push(contexto);
       return { content: [{ type: 'text', text: partes.join('\n\n') }] };
     }
 

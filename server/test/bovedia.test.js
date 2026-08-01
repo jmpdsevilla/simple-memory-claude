@@ -920,6 +920,43 @@ describe('cierre de tareas programadas', () => {
     assert.match(texto, new RegExp(`modificada: ${AYER}`));
   });
 
+  test('due_notes sirve el texto entero de la tarea vencida, sin ir a buscarla', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    assert.match(texto, /CONTEXTO DE LAS TAREAS DE HOY/);
+    assert.match(texto, /═══ TAREA: limpiar-los-permisos ═══/);
+    assert.match(texto, /Auditar \[\[permisos-del-agente\]\]/);
+  });
+
+  test('due_notes sirve además el contenido de las notas que la tarea enlaza', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    // El cuerpo de la nota enlazada, que antes había que pedir aparte.
+    assert.match(texto, /limpiar-los-permisos enlaza → permisos-del-agente/);
+    assert.match(texto, /Sin tocar\./);
+  });
+
+  test('due_notes no repite una nota ya servida por otra tarea', async () => {
+    const { texto } = await kb.llamar('due_notes', {});
+    const bloque = texto.split('CONTEXTO DE LAS TAREAS DE HOY')[1] ?? '';
+    const veces = (bloque.match(/enlaza → asistente-del-cliente/g) || []).length;
+    assert.equal(veces, 1);
+  });
+
+  test('due_notes avisa de los enlaces que no tienen nota', async () => {
+    await kb.llamar('write_note', {
+      title: 'Tarea con enlace roto',
+      content: `> APARECER: ${AYER}\n\nMirar [[ficha-que-no-existe]].`,
+      category: 'programado',
+    });
+    const { texto } = await kb.llamar('due_notes', {});
+    assert.match(texto, /Enlaces sin nota \(revisar\): .*ficha-que-no-existe/);
+    await kb.llamar('delete_note', { name: 'tarea-con-enlace-roto' });
+  });
+
+  test('sin tareas vencidas no se sirve contexto ninguno', async () => {
+    const { texto } = await kb.llamar('due_notes', { category: 'sistema' });
+    assert.doesNotMatch(texto, /CONTEXTO DE LAS TAREAS DE HOY/);
+  });
+
   test('editar una nota que una tarea vencida enlaza avisa de cerrarla', async () => {
     const { texto } = await kb.llamar('append_to_note', {
       name: 'asistente-del-cliente', content: 'Probado con el cliente.',
