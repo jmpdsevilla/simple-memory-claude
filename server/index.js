@@ -896,10 +896,48 @@ function avisoTareaAbierta(nombreNota) {
   }:\n${lista}\nSi ese trabajo ya está hecho, borra esa nota (delete_note) tras llevar su conclusión a su sitio definitivo. Si se pasa a otro día, cambia SU fecha APARECER. Una tarea, un registro: no crear una nota nueva que la absorba dejándola viva.`;
 }
 
-// Aviso al escribir en `programado/`: pone delante las tareas que ya existen,
-// señalando las que tratan de lo mismo (comparten notas enlazadas). Es el caso
-// que provocó el fallo: una nota nueva agrupaba varias tareas y las originales
-// siguieron vivas, duplicando el registro.
+// Notas de la bóveda que tratan del mismo tema que la tarea recién escrita y
+// que la tarea NO enlaza. El fallo que tapa (1-ago-2026): se programó un
+// experimento sobre WeShop sin haber abierto la ficha de WeShop, así que la
+// tarea nació con un planteamiento falso y quien la ejecutó tres días después
+// lo heredó entero. Una tarea mal escrita envenena la sesión que la cumple.
+//
+// La señal son las etiquetas, que ya están en el índice y no hay que adivinar.
+// Se descartan las estructurales (`#tipo_*`, que no dicen de qué va nada) y las
+// demasiado comunes (las que marcan más del 10% de la bóveda, como `#smc`):
+// esas convertirían el aviso en ruido, y un aviso que suena siempre no se lee.
+function fichasDelTemaSinEnlazar(cuerpo, enlacesNuevo, slugPropio) {
+  const etiquetas = extractHashtags(cuerpo || '').filter((t) => !t.startsWith('#tipo_'));
+  if (!etiquetas.length) return [];
+  const allNotes = getCachedAllNotes();
+  const candidatas = allNotes.filter((n) => !categoryMatches(n.category, PROGRAMADO));
+  const frecuencia = new Map();
+  const etiquetasDe = new Map();
+  for (const n of candidatas) {
+    const tags = new Set(extractHashtags(n.body || ''));
+    etiquetasDe.set(n.name, tags);
+    for (const t of tags) frecuencia.set(t, (frecuencia.get(t) || 0) + 1);
+  }
+  const techo = Math.max(5, Math.ceil(candidatas.length * 0.1));
+  const utiles = etiquetas.filter((t) => (frecuencia.get(t) || 0) <= techo);
+  if (!utiles.length) return [];
+
+  return candidatas
+    .filter((n) => slugify(n.name) !== slugPropio && !enlacesNuevo.has(slugify(n.name)))
+    .map((n) => ({ n, comunes: utiles.filter((t) => etiquetasDe.get(n.name)?.has(t)) }))
+    .filter((x) => x.comunes.length > 0)
+    .sort((a, b) => b.comunes.length - a.comunes.length || a.n.name.localeCompare(b.n.name))
+    .slice(0, 5);
+}
+
+// Aviso al escribir en `programado/`. Tres cosas, en el único momento en que
+// sirven de algo — mientras se está escribiendo la tarea:
+//  - las tareas que ya existen y tratan de lo mismo (comparten notas enlazadas),
+//    que es el caso que provocó el fallo del 30-jul: una nota nueva agrupaba
+//    varias tareas y las originales siguieron vivas, duplicando el registro;
+//  - la tarea ciega: sin un solo wikilink nadie sabrá luego de qué iba, y además
+//    queda fuera de la detección de "ya hecho", que se basa en los enlaces;
+//  - las fichas del tema que la tarea no enlaza (ver arriba).
 function avisoProgramadoNuevo(nombreNota, cuerpo) {
   let programados;
   try {
@@ -909,7 +947,6 @@ function avisoProgramadoNuevo(nombreNota, cuerpo) {
   }
   const slug = slugify(nombreNota);
   const otros = programados.filter((p) => slugify(p.name) !== slug);
-  if (!otros.length) return '';
 
   const hoy = today();
   const enlacesNuevo = new Set(extractLinkTargets(cuerpo || '').map((l) => slugify(l)));
@@ -920,10 +957,22 @@ function avisoProgramadoNuevo(nombreNota, cuerpo) {
   const abiertos = otros.filter((p) => p.fecha <= hoy);
 
   const partes = [];
+  if (!enlacesNuevo.size) {
+    partes.push('TAREA CIEGA: no enlaza ninguna nota. Quien la ejecute no sabrá de qué salió, y queda fuera del aviso de tarea ya hecha, que se apoya en los enlaces. Enlaza las notas del tema antes de dejarla.');
+  }
   if (solapan.length) {
     partes.push(`Tratan de lo mismo (notas enlazadas en común):\n` + solapan.slice(0, 5)
       .map((x) => `- ${x.p.name} — APARECER: ${x.p.fecha} · en común: ${x.comunes.slice(0, 4).join(', ')}`)
       .join('\n'));
+  }
+  let sinEnlazar = [];
+  try {
+    sinEnlazar = fichasDelTemaSinEnlazar(cuerpo, enlacesNuevo, slug);
+  } catch { /* el aviso nunca puede tumbar una escritura */ }
+  if (sinEnlazar.length) {
+    partes.push(`FICHAS DEL TEMA QUE NO ENLAZAS — ¿las has leído antes de escribir esta tarea?\n` + sinEnlazar
+      .map((x) => `- ${x.n.name} (${x.n.category}) · comparte: ${x.comunes.join(' ')}`)
+      .join('\n') + `\nUna tarea escrita sin abrirlas puede nacer con el planteamiento equivocado, y quien la ejecute lo heredará. El programado plantea el ENCARGO, no la conclusión.`);
   }
   if (abiertos.length) {
     partes.push(`Tareas que ya tocaban y siguen abiertas:\n` + abiertos

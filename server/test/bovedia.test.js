@@ -989,3 +989,104 @@ describe('cierre de tareas programadas', () => {
     assert.doesNotMatch(texto, /UNA TAREA, UN REGISTRO/);
   });
 });
+
+// Que una tarea programada nazca bien escrita: enlazando las notas del tema y
+// habiendo abierto las fichas que ya tratan de eso. Reproduce el fallo del
+// 1-ago-2026 (un experimento sobre WeShop programado sin abrir la ficha de
+// WeShop, con un planteamiento que la ficha desmentía).
+describe('escribir bien una tarea programada', () => {
+  let root;
+  let kb;
+  const dia = (offset) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + offset);
+    return d.toISOString().split('T')[0];
+  };
+
+  before(async () => {
+    root = bovedaTemporal('programados-bien');
+    const escribir = (categoria, slug, cuerpo) => {
+      const dir = path.join(root, categoria);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${slug}.md`), `---\ntitle: ${slug}\ncategory: ${categoria}\n---\n\n${cuerpo}\n`);
+    };
+
+    // Fichas del tema, cada una con su etiqueta propia.
+    escribir('ltd', 'ficha-weshop', 'Arsenal de WeShop.\n\n#weshop #imagenes #smc');
+    escribir('procesos', 'workflow-nano-banana', 'Cómo se generan las imágenes.\n\n#nanobanana #imagenes #smc');
+    // Relleno para que `#smc` pase de común y quede capada como ruido.
+    for (let i = 1; i <= 5; i++) escribir('varios', `relleno-${i}`, `Nota de relleno.\n\n#smc`);
+    // Etiqueta estructural: no dice de qué va nada, no debe usarse como señal.
+    escribir('varios', 'ficha-estructural', 'Sin tema propio.\n\n#tipo_referencia');
+
+    kb = await new Cliente(root).iniciar();
+  });
+
+  after(() => {
+    kb.cerrar();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('avisa de las fichas del tema que la tarea no enlaza', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Experimento de fotos',
+      content: `> APARECER: ${dia(3)}\n\nComparar las dos vías.\n\n#weshop #smc`,
+      category: 'programado',
+    });
+    assert.match(texto, /FICHAS DEL TEMA QUE NO ENLAZAS/);
+    assert.match(texto, /ficha-weshop/);
+    assert.match(texto, /plantea el ENCARGO, no la conclusión/);
+  });
+
+  test('las etiquetas demasiado comunes no generan ruido', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Otra tarea con etiqueta comodín',
+      content: `> APARECER: ${dia(4)}\n\nAlgo general.\n\n#smc [[ficha-weshop]]`,
+      category: 'programado',
+    });
+    assert.doesNotMatch(texto, /relleno-1/);
+  });
+
+  test('las etiquetas de tipo no cuentan como tema', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Tarea solo estructural',
+      content: `> APARECER: ${dia(5)}\n\nRevisar algo.\n\n#tipo_proceso [[ficha-weshop]]`,
+      category: 'programado',
+    });
+    assert.doesNotMatch(texto, /ficha-estructural/);
+  });
+
+  test('una tarea que enlaza su ficha no recibe el aviso', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Tarea bien escrita',
+      content: `> APARECER: ${dia(6)}\n\nSeguir [[ficha-weshop]] y [[workflow-nano-banana]].\n\n#weshop #nanobanana`,
+      category: 'programado',
+    });
+    assert.doesNotMatch(texto, /FICHAS DEL TEMA QUE NO ENLAZAS/);
+  });
+
+  test('una tarea sin ningún enlace se marca como ciega', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Tarea sin enlaces',
+      content: `> APARECER: ${dia(7)}\n\nHacer una cosa que no dice cuál.`,
+      category: 'programado',
+    });
+    assert.match(texto, /TAREA CIEGA/);
+  });
+
+  test('una tarea con enlaces no se marca como ciega', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Tarea con contexto',
+      content: `> APARECER: ${dia(8)}\n\nRevisar [[ficha-weshop]].\n\n#weshop`,
+      category: 'programado',
+    });
+    assert.doesNotMatch(texto, /TAREA CIEGA/);
+  });
+
+  test('escribir fuera de programado no dispara ninguno de estos avisos', async () => {
+    const { texto } = await kb.llamar('write_note', {
+      title: 'Apunte cualquiera', content: 'Nada especial.\n\n#weshop', category: 'conocimiento',
+    });
+    assert.doesNotMatch(texto, /TAREA CIEGA|FICHAS DEL TEMA/);
+  });
+});

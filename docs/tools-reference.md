@@ -321,6 +321,11 @@ Con cada tarea vencida devuelve también su fecha de modificación y, si la hay,
 
 La regla que sostiene esto es **una tarea, un registro**: si se resuelve, su nota se borra; si se pasa a otro día, se cambia *su* fecha `APARECER`, nunca se crea otra nota. Las herramientas de escritura avisan en la misma línea: al escribir en una nota que una tarea vencida enlaza, y al escribir en la carpeta de programadas.
 
+Al escribir en la carpeta de programadas el aviso cubre además **cómo nace la tarea**, que es donde se decide si servirá de algo:
+
+- **Tarea ciega** — no enlaza ninguna nota. Quien la ejecute no sabrá de dónde salió, y queda fuera de la detección de "ya hecho", que se apoya precisamente en los enlaces.
+- **Fichas del tema sin enlazar** — notas de la bóveda que comparten etiqueta con la tarea y que la tarea no enlaza. Sirve para no programar trabajo sobre algo cuya ficha no se ha abierto: una tarea escrita así nace con el planteamiento equivocado y quien la cumpla lo heredará. Se descartan las etiquetas estructurales (`#tipo_*`) y las que marcan más del 10% de la bóveda, porque un aviso que suena siempre no se lee; salen como mucho cinco notas, las de más etiquetas en común.
+
 Cuando hay tareas vencidas, la respuesta trae además el **contexto entero servido de una vez**: el texto completo de cada tarea y el de todas las notas que enlaza (sin repetir ninguna, avisando de los enlaces que no tienen nota detrás). El motivo es que una nota programada es un disparador, no una conclusión: su planteamiento puede haber envejecido o haberse escrito mal, y lo que lo desmiente suele estar justo en las fichas que enlaza. Servirlo aquí evita depender de que alguien se acuerde de ir a buscarlo. Hay un tope de 60.000 caracteres; lo que no cabe se marca para leerlo con `read_note`.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
