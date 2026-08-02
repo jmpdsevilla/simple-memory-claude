@@ -1672,7 +1672,7 @@ const ALL_TOOLS = [
     // ── Bloque 5: rutina de la bóveda ────────────────────────────────────
     {
       name: 'due_notes',
-      description: 'Revisar las notas programadas y devolver SOLO las que ya toca sacar hoy, CON todo su contexto servido de una vez. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión. Cuando hay tareas vencidas devuelve además el TEXTO ENTERO de cada una y el de las notas que enlaza, para no tener que ir a buscarlas: el planteamiento de una tarea puede estar equivocado y lo que lo desmiente suele estar justo en lo que enlaza, así que NO se responde repitiendo el titular de una tarea sin haber leído ese contexto. Y AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
+      description: 'Devolver la LISTA de las notas programadas que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión, y el día que no toca nada la respuesta es una línea. Devuelve SOLO la lista, a propósito: no trae el contenido de ninguna tarea ni de lo que enlaza, porque al arrancar no se sabe cuál va a elegir José y cargarlas todas es cargar de más para nada. El contenido se lee DESPUÉS, cuando él elige una tarea concreta: entonces se abre esa con read_note junto con las notas que enlaza, y solo esa. Y AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2864,7 +2864,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           fecha,
           title: note.frontmatter?.title || note.name,
           updated: note.frontmatter?.updated || null,
-          body: note.body || '',
           wikilinks: [...new Set((note.wikilinks || []).map((w) => slugify(w)))],
         };
         if (fecha <= hoy) due.push(item); else upcoming.push(item);
@@ -2910,46 +2909,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return '\n' + lineas.join('\n');
       };
 
-      // Contexto completo de las tareas de hoy, servido sin pedirlo.
-      // El fallo que tapa (1-ago-2026): `due_notes` devolvía un titular, la
-      // sesión lo tomaba por la conclusión ya masticada y contestaba sin abrir
-      // ni la tarea ni las fichas que la tarea enlaza — que eran justo las que
-      // desmentían su planteamiento. Una regla escrita ("acuérdate de leer lo
-      // que enlaza") es una regla que se salta; que el contenido venga solo por
-      // el mismo sitio por donde entra la tarea, no.
-      const CONTEXTO_MAX = 60000;
-      const construirContexto = () => {
-        if (!due.length) return null;
-        const bloques = [];
-        const yaPuesto = new Set(due.map((d) => slugify(d.name)));
-        const rotos = new Set();
-        let gastado = 0;
-        let cortado = false;
-        const trozo = (texto, nombre) => {
-          const restante = CONTEXTO_MAX - gastado;
-          if (restante <= 0) { cortado = true; return `[no incluido por espacio — leer con read_note("${nombre}")]`; }
-          gastado += Math.min(texto.length, restante);
-          if (texto.length <= restante) return texto;
-          cortado = true;
-          return `${texto.slice(0, restante)}\n[…cortada — leer entera con read_note("${nombre}")]`;
-        };
-
-        for (const d of due) {
-          bloques.push(`═══ TAREA: ${d.name} ═══\n${trozo(d.body, d.name)}`);
-          for (const w of d.wikilinks) {
-            if (yaPuesto.has(w)) continue;
-            const enlazada = bySlug.get(w);
-            if (!enlazada) { rotos.add(w); continue; }
-            yaPuesto.add(w);
-            bloques.push(`──── ${d.name} enlaza → ${enlazada.name} (${enlazada.category}) ────\n${trozo(enlazada.body || '', enlazada.name)}`);
-          }
-        }
-        if (rotos.size) bloques.push(`Enlaces sin nota (revisar): ${[...rotos].join(', ')}`);
-        if (cortado) bloques.push(`Parte del contexto no cabe entero (tope ${CONTEXTO_MAX} caracteres): leer con read_note lo que quede corto antes de decidir.`);
-        return 'CONTEXTO DE LAS TAREAS DE HOY — leerlo antes de responder a José.\n' +
-          'Van enteras la tarea y las notas que enlaza: no hay que ir a buscarlas, y no se contesta repitiendo el titular de una tarea sin haber leído lo que enlaza (el planteamiento de una tarea puede estar equivocado, y lo que lo desmiente suele ser justo lo que enlaza).\n\n' +
-          bloques.join('\n\n');
-      };
+      // Aquí NO se sirve el contenido de nada: solo la lista. Por capas.
+      //
+      // Se sirvió el texto entero de cada tarea y de lo que enlazaba durante un
+      // día (1-ago-2026), para tapar el fallo de contestar por el titular sin
+      // abrir lo que la tarea enlazaba. Fue pasarse de frenada: José abre una
+      // sesión por tema y casi nunca toca más de una tarea, así que arrancar
+      // cargando siete expedientes es cargar seis para nada — y además
+      // desbordaba el tope por respuesta del cliente, con lo que llegaba MENOS
+      // contexto del previsto y encima costando más leerlo.
+      //
+      // El orden correcto es el de la conversación real: saludo → lista simple
+      // → "¿por dónde empezamos?" → José elige UNA → y ahí se tira del hilo de
+      // esa, entera y con lo que enlaza. El error del 1-ago no se cometió al
+      // listar la tarea: se cometió al trabajarla. Ahí es donde hay que leer.
+      // La regla va escrita abajo, en el propio resultado.
 
       const partes = [];
       if (due.length) {
@@ -2968,8 +2942,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (sinFecha.length) {
         partes.push(`Sin línea APARECER (revisar): ${sinFecha.join(', ')}`);
       }
-      const contexto = construirContexto();
-      if (contexto) partes.push(contexto);
+      // Higiene, no contenido: una tarea que enlaza a una nota que no existe es
+      // una tarea ciega. Son nombres, no cuerpos, y solo salen si hay roto.
+      const rotos = [...new Set(due.flatMap((d) => d.wikilinks).filter((w) => !bySlug.has(w)))];
+      if (rotos.length) {
+        partes.push(`Enlaces sin nota (revisar): ${rotos.join(', ')}`);
+      }
+      if (due.length) {
+        partes.push('ESTO ES SOLO LA LISTA. No se opina sobre una tarea a partir de su titular, ni se carga nada todavía: no se sabe cuál va a elegir José. Se le da la lista y se le pregunta por dónde empezar.\n' +
+          'CUANDO ELIJA UNA: leerla entera con read_note, y con ella las notas que enlaza — SOLO las de esa tarea, no las de las demás. Ahí es donde el planteamiento de una tarea se cae, y lo que lo desmiente suele estar justo en lo que enlaza.');
+      }
       return { content: [{ type: 'text', text: partes.join('\n\n') }] };
     }
 

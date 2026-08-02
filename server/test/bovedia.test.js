@@ -920,25 +920,22 @@ describe('cierre de tareas programadas', () => {
     assert.match(texto, new RegExp(`modificada: ${AYER}`));
   });
 
-  test('due_notes sirve el texto entero de la tarea vencida, sin ir a buscarla', async () => {
+  test('due_notes NO sirve el cuerpo de la tarea vencida — solo la lista', async () => {
     const { texto } = await kb.llamar('due_notes', {});
-    assert.match(texto, /CONTEXTO DE LAS TAREAS DE HOY/);
-    assert.match(texto, /═══ TAREA: limpiar-los-permisos ═══/);
-    assert.match(texto, /Auditar \[\[permisos-del-agente\]\]/);
+    assert.match(texto, /limpiar-los-permisos/);                        // el nombre, sí
+    assert.doesNotMatch(texto, /Auditar \[\[permisos-del-agente\]\]/);  // el cuerpo, no
   });
 
-  test('due_notes sirve además el contenido de las notas que la tarea enlaza', async () => {
+  test('due_notes NO sirve el contenido de las notas que la tarea enlaza', async () => {
     const { texto } = await kb.llamar('due_notes', {});
-    // El cuerpo de la nota enlazada, que antes había que pedir aparte.
-    assert.match(texto, /limpiar-los-permisos enlaza → permisos-del-agente/);
-    assert.match(texto, /Sin tocar\./);
+    assert.doesNotMatch(texto, /Sin tocar\./);
   });
 
-  test('due_notes no repite una nota ya servida por otra tarea', async () => {
+  test('due_notes dice que la tarea se lee al elegirla, y solo esa', async () => {
     const { texto } = await kb.llamar('due_notes', {});
-    const bloque = texto.split('CONTEXTO DE LAS TAREAS DE HOY')[1] ?? '';
-    const veces = (bloque.match(/enlaza → asistente-del-cliente/g) || []).length;
-    assert.equal(veces, 1);
+    assert.match(texto, /ESTO ES SOLO LA LISTA/);
+    assert.match(texto, /CUANDO ELIJA UNA/);
+    assert.match(texto, /SOLO las de esa tarea/);
   });
 
   test('due_notes avisa de los enlaces que no tienen nota', async () => {
@@ -952,9 +949,9 @@ describe('cierre de tareas programadas', () => {
     await kb.llamar('delete_note', { name: 'tarea-con-enlace-roto' });
   });
 
-  test('sin tareas vencidas no se sirve contexto ninguno', async () => {
+  test('sin tareas vencidas no se dice nada de leer ni de elegir', async () => {
     const { texto } = await kb.llamar('due_notes', { category: 'sistema' });
-    assert.doesNotMatch(texto, /CONTEXTO DE LAS TAREAS DE HOY/);
+    assert.doesNotMatch(texto, /ESTO ES SOLO LA LISTA/);
   });
 
   test('editar una nota que una tarea vencida enlaza avisa de cerrarla', async () => {

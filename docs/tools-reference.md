@@ -326,7 +326,11 @@ Al escribir en la carpeta de programadas el aviso cubre además **cómo nace la 
 - **Tarea ciega** — no enlaza ninguna nota. Quien la ejecute no sabrá de dónde salió, y queda fuera de la detección de "ya hecho", que se apoya precisamente en los enlaces.
 - **Fichas del tema sin enlazar** — notas de la bóveda que comparten etiqueta con la tarea y que la tarea no enlaza. Sirve para no programar trabajo sobre algo cuya ficha no se ha abierto: una tarea escrita así nace con el planteamiento equivocado y quien la cumpla lo heredará. Se descartan las etiquetas estructurales (`#tipo_*`) y las que marcan más del 10% de la bóveda, porque un aviso que suena siempre no se lee; salen como mucho cinco notas, las de más etiquetas en común.
 
-Cuando hay tareas vencidas, la respuesta trae además el **contexto entero servido de una vez**: el texto completo de cada tarea y el de todas las notas que enlaza (sin repetir ninguna, avisando de los enlaces que no tienen nota detrás). El motivo es que una nota programada es un disparador, no una conclusión: su planteamiento puede haber envejecido o haberse escrito mal, y lo que lo desmiente suele estar justo en las fichas que enlaza. Servirlo aquí evita depender de que alguien se acuerde de ir a buscarlo. Hay un tope de 60.000 caracteres; lo que no cabe se marca para leerlo con `read_note`.
+**Devuelve la lista y nada más: ni el texto de las tareas ni el de las notas que enlazan.** Es deliberado. Al arrancar una sesión no se sabe qué tarea se va a elegir —y quien la usa abre normalmente una sesión por tema, tocando una sola—, así que servir todos los expedientes es cargar de más para nada, ensucia el criterio con material que no viene al caso y desborda el tope por respuesta del cliente MCP.
+
+El contenido se lee **después**, cuando hay una tarea elegida: entonces se abre esa con `read_note` junto con las notas que enlaza, y solo esa. Una nota programada sigue siendo un disparador y no una conclusión —su planteamiento puede haber envejecido o haberse escrito mal, y lo que lo desmiente suele estar justo en las fichas que enlaza—, pero eso importa **al trabajarla**, que es donde se comete el error, no al listarla. Por eso la respuesta cierra recordando que de la lista no se opina.
+
+Sí devuelve, porque son cálculos sobre el índice y no contenido, los avisos de notas sin línea `APARECER` y de **enlaces sin nota detrás**: una tarea que apunta a una nota inexistente es una tarea ciega.
 
 | Parámetro | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
