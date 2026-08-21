@@ -8,6 +8,26 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.8.0] — 2026-08-21
+
+El ciclo de vida de las tareas programadas. El estado de una tarea vivía en dos sitios sin nada que los sincronizara —la fecha de su nota programada y el trabajo hecho en las notas del tema—, y el paso de cerrar el registro estaba al final de la lista, que es donde se cae todo: la tarea volvía a salir como pendiente al día siguiente aunque el trabajo estuviera hecho. La regla que ahora vigila el servidor: **una tarea, un registro** — si se resuelve, su nota se borra; si se aplaza, se cambia su fecha; nunca una nota nueva que absorba a otra dejándola viva.
+
+### Añadido
+
+**`due_notes` deja de ser un despertador ciego.** Con cada tarea vencida devuelve su fecha de modificación y cruza dos señales del propio índice para señalar las que parecen ya resueltas: las notas que la tarea enlaza se modificaron en su día o después (alguien ya trabajó en eso), u otra tarea posterior comparte dos o más notas enlazadas (la absorbió, y este registro es el duplicado que sobra). Avisa también de las notas programadas sin fecha y de los enlaces sin nota detrás.
+
+**Aviso al escribir en una nota que una tarea vencida enlaza** (`write_note`, `edit_note`, `append_to_note`, `prepend_to_note`, `update_section`, `insert_after_section`): es el momento exacto en que se está haciendo ese trabajo, y por tanto el momento de cerrar la tarea. Silencio absoluto si no hay coincidencia.
+
+**Que una tarea programada nazca bien escrita.** Al escribir en la carpeta de programados, tres señales: las tareas ya existentes que tratan de lo mismo (con la regla del registro único), la **tarea ciega** que no enlaza ninguna nota (quien la ejecute no sabrá de dónde salió, y queda fuera de la detección de "ya hecho"), y las **fichas del tema que no enlaza** — notas que comparten etiqueta con la tarea, descartando las estructurales y las que marcan más de un 10% de la bóveda, cinco como mucho.
+
+### Cambiado
+
+**`due_notes` devuelve la lista simple y cierra con la regla: de la lista no se opina.** Al elegir una tarea se lee entera con lo que enlaza — solo la elegida. Durante el desarrollo se probó lo contrario, servir el texto completo de cada tarea vencida con todas sus notas, y se revirtió tras medirlo en uso real: cargaba expedientes que la sesión no iba a tocar y hacía el arranque más lento, no más informado. El hilo se tira por capas.
+
+### Pruebas
+
+89 casos (20 nuevos en dos suites: *cierre de tareas programadas* y *escribir bien una tarea programada*). Reproducen el caso real: tarea con notas ya trabajadas, tarea absorbida por otra posterior, tarea que sigue pendiente de verdad, tarea ciega, fichas del tema sin enlazar, y el silencio cuando no hay coincidencia.
+
 ## [2.7.0] — 2026-07-25
 
 Red de seguridad. Hasta ahora BovedIA tenía muchas formas de escribir y ninguna de deshacer: una operación masiva que saliera mal solo se podía revertir si alguien se había acordado de hacer una copia a mano.
