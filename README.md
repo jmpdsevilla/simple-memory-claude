@@ -6,6 +6,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple)](https://modelcontextprotocol.io)
 
+> **Estado del proyecto (28 de agosto de 2026).** BovedIA se sigue desarrollando a diario, pero **en un repositorio privado**: el trabajo del día a día se hace sobre una instalación real y sus pruebas contienen datos de clientes y agenda personal, así que publicarlo tal cual no es una opción responsable.
+>
+> Lo que hay aquí es una versión **estable, completa y probada** (v2.8.1, 89 pruebas): funciona, se mantiene instalable y su licencia MIT no cambia. No está abandonada — está congelada a propósito.
+>
+> Cuando haya material que pueda salir limpio (el módulo de agenda para Apple, la memoria por activación, la búsqueda semántica local), se publicará aquí. Sin fecha comprometida.
+
 ---
 
 ## Qué es BovedIA

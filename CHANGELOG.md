@@ -8,6 +8,18 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/) y el versionado
 
 ---
 
+## [2.8.1] — 2026-08-28
+
+Versión de cierre de la etapa pública. El servidor no cambia de comportamiento: no hay herramientas nuevas, ni parámetros nuevos, ni nada que actualizar por obligación.
+
+### Cambiado
+
+- **Textos despersonalizados.** Cinco frases de `due_notes` (su descripción, dos comentarios y dos mensajes de salida) hablaban del autor por su nombre de pila, heredado de la instalación donde se escribió. Ahora dicen "el usuario", que es lo que corresponde a un paquete que instala cualquiera.
+- **Dependencias al día.** `npm audit` señalaba un fallo alto y varios moderados en dependencias transitivas del SDK de MCP (`hono`, `fast-uri`), todos del transporte HTTP — que BovedIA no usa, porque habla por stdio. No afectaban a ninguna instalación real, pero una versión que se queda congelada no debe arrastrar avisos: se actualizan (solo el `package-lock.json`; el rango del SDK no cambia) y el informe queda en **0 vulnerabilidades**.
+- **README.** Nota de estado: el desarrollo continúa en un repositorio privado, porque se hace sobre una instalación real cuyas pruebas contienen datos de clientes y agenda personal. Esta versión queda **congelada a propósito**: estable, completa, probada (89 pruebas) e instalable, con su licencia MIT intacta. Lo que pueda salir limpio más adelante —el módulo de agenda para Apple, la memoria por activación, la búsqueda semántica local— se publicará aquí, sin fecha comprometida.
+
+---
+
 ## [2.8.0] — 2026-08-21
 
 El ciclo de vida de las tareas programadas. El estado de una tarea vivía en dos sitios sin nada que los sincronizara —la fecha de su nota programada y el trabajo hecho en las notas del tema—, y el paso de cerrar el registro estaba al final de la lista, que es donde se cae todo: la tarea volvía a salir como pendiente al día siguiente aunque el trabajo estuviera hecho. La regla que ahora vigila el servidor: **una tarea, un registro** — si se resuelve, su nota se borra; si se aplaza, se cambia su fecha; nunca una nota nueva que absorba a otra dejándola viva.

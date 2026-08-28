@@ -1672,7 +1672,7 @@ const ALL_TOOLS = [
     // ── Bloque 5: rutina de la bóveda ────────────────────────────────────
     {
       name: 'due_notes',
-      description: 'Devolver la LISTA de las notas programadas que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión, y el día que no toca nada la respuesta es una línea. Devuelve SOLO la lista, a propósito: no trae el contenido de ninguna tarea ni de lo que enlaza, porque al arrancar no se sabe cuál va a elegir José y cargarlas todas es cargar de más para nada. El contenido se lee DESPUÉS, cuando él elige una tarea concreta: entonces se abre esa con read_note junto con las notas que enlaza, y solo esa. Y AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
+      description: 'Devolver la LISTA de las notas programadas que ya toca sacar hoy. Lee la fecha `> APARECER: AAAA-MM-DD` del principio de cada nota de la carpeta de programados y la compara con la fecha actual. Sustituye a mirar una por una: una sola llamada barata para la comprobación de arranque de sesión, y el día que no toca nada la respuesta es una línea. Devuelve SOLO la lista, a propósito: no trae el contenido de ninguna tarea ni de lo que enlaza, porque al arrancar no se sabe cuál va a elegir el usuario y cargarlas todas es cargar de más para nada. El contenido se lee DESPUÉS, cuando elige una tarea concreta: entonces se abre esa con read_note junto con las notas que enlaza, y solo esa. Y AVISA de las tareas que parecen ya hechas o duplicadas —porque las notas que enlazan se tocaron en su fecha o después, o porque otra tarea posterior comparte esas mismas notas—: esas hay que comprobarlas ANTES de darlas como pendientes, y si el trabajo está hecho, la nota se borra. Una tarea, un registro.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2913,14 +2913,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       //
       // Se sirvió el texto entero de cada tarea y de lo que enlazaba durante un
       // día (1-ago-2026), para tapar el fallo de contestar por el titular sin
-      // abrir lo que la tarea enlazaba. Fue pasarse de frenada: José abre una
-      // sesión por tema y casi nunca toca más de una tarea, así que arrancar
+      // abrir lo que la tarea enlazaba. Fue pasarse de frenada: se abre una
+      // sesión por tema y casi nunca se toca más de una tarea, así que arrancar
       // cargando siete expedientes es cargar seis para nada — y además
       // desbordaba el tope por respuesta del cliente, con lo que llegaba MENOS
       // contexto del previsto y encima costando más leerlo.
       //
       // El orden correcto es el de la conversación real: saludo → lista simple
-      // → "¿por dónde empezamos?" → José elige UNA → y ahí se tira del hilo de
+      // → "¿por dónde empezamos?" → el usuario elige UNA → y ahí se tira del hilo de
       // esa, entera y con lo que enlaza. El error del 1-ago no se cometió al
       // listar la tarea: se cometió al trabajarla. Ahí es donde hay que leer.
       // La regla va escrita abajo, en el propio resultado.
@@ -2930,7 +2930,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         partes.push(`${due.length} nota(s) programada(s) para hoy o antes (${hoy}):\n` +
           due.map((d) => `- **${d.name}** — APARECER: ${d.fecha}${d.fecha < hoy ? ' (vencida)' : ''} · modificada: ${d.updated || 'sin dato'}\n  ${d.title}${detalleSospecha(d.name)}`).join('\n'));
         if (sospechas.size) {
-          partes.push(`AVISO — ${sospechas.size} de esas tareas parece${sospechas.size === 1 ? '' : 'n'} estar ya hecha${sospechas.size === 1 ? '' : 's'} o duplicada${sospechas.size === 1 ? '' : 's'}. Comprobarlo ANTES de dárselas a José como pendientes: si el trabajo está hecho, la nota se borra; si la absorbe otra tarea, sobra. Una tarea, un registro.`);
+          partes.push(`AVISO — ${sospechas.size} de esas tareas parece${sospechas.size === 1 ? '' : 'n'} estar ya hecha${sospechas.size === 1 ? '' : 's'} o duplicada${sospechas.size === 1 ? '' : 's'}. Comprobarlo ANTES de darlas como pendientes: si el trabajo está hecho, la nota se borra; si la absorbe otra tarea, sobra. Una tarea, un registro.`);
         }
       } else {
         partes.push(`Nada programado para hoy (${hoy}). ${scoped.length} nota(s) en "${category}", todas con fecha posterior.`);
@@ -2949,7 +2949,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         partes.push(`Enlaces sin nota (revisar): ${rotos.join(', ')}`);
       }
       if (due.length) {
-        partes.push('ESTO ES SOLO LA LISTA. No se opina sobre una tarea a partir de su titular, ni se carga nada todavía: no se sabe cuál va a elegir José. Se le da la lista y se le pregunta por dónde empezar.\n' +
+        partes.push('ESTO ES SOLO LA LISTA. No se opina sobre una tarea a partir de su titular, ni se carga nada todavía: no se sabe cuál va a elegir el usuario. Se le da la lista y se le pregunta por dónde empezar.\n' +
           'CUANDO ELIJA UNA: leerla entera con read_note, y con ella las notas que enlaza — SOLO las de esa tarea, no las de las demás. Ahí es donde el planteamiento de una tarea se cae, y lo que lo desmiente suele estar justo en lo que enlaza.');
       }
       return { content: [{ type: 'text', text: partes.join('\n\n') }] };

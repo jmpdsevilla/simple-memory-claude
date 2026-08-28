@@ -4,6 +4,8 @@
 
 BovedIA (bóveda + IA) es un servidor MCP que le da memoria persistente a Claude Code y a cualquier cliente MCP. Tus notas viven en archivos Markdown en tu disco, sincronizados en la nube si quieres.
 
+> **Versión estable y congelada (agosto de 2026).** El desarrollo continúa en privado, porque se hace sobre una instalación real con datos de clientes. Esta versión está completa y probada (89 pruebas) y se mantiene instalable. Detalles en el repositorio.
+
 ## Instalación rápida (npx)
 
 Añade esto a la configuración MCP de tu cliente (Claude Code, Claude Desktop…):
